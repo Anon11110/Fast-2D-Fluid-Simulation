@@ -23,7 +23,14 @@ if(MSVC)
     add_compile_options(/wd4717)
 endif()
 
-add_executable(VkFluidSimulation src/main.cpp)
+add_executable(VkFluidSimulation 
+    src/main.cpp
+    src/FluidRenderer.cpp
+)
+
+target_include_directories(VkFluidSimulation PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 
 target_link_libraries(VkFluidSimulation PRIVATE
     lava::engine 
