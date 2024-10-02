@@ -278,6 +278,52 @@ struct image : entity {
         return m_allocation;
     }
 
+    /**
+     * @brief Transition the layout of the image
+     *
+     * @param commandBuffer    Command buffer to record the pipeline barrier
+     * @param newLayout        The new image layout to transition to
+     * @param dstAccessMask    The destination access mask
+     * @param dstStage         The destination pipeline stage
+     */
+    void transition_layout(VkCommandBuffer cmd_buffer,
+                           VkImageLayout new_layout,
+                           VkAccessFlags dst_access_mask,
+                           VkPipelineStageFlags dst_stage) {
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+
+        barrier.image = m_vk_image;
+
+        barrier.oldLayout = m_info.initialLayout;
+        barrier.newLayout = new_layout;
+
+        barrier.srcAccessMask = m_accessMask;
+        barrier.dstAccessMask = dst_access_mask;
+
+        barrier.subresourceRange.aspectMask = m_subresource_range.aspectMask;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = m_info.mipLevels;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = m_info.arrayLayers;
+
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+
+        vkCmdPipelineBarrier(
+            cmd_buffer,
+            m_stage,
+            dst_stage,
+            0,
+            0, nullptr,
+            0, nullptr,
+            1, &barrier);
+
+        m_accessMask = dst_access_mask;
+        m_info.initialLayout = new_layout;
+        m_stage = dst_stage;
+    }
+
 private:
     /// Vulkan device
     device::ptr m_device = nullptr;
@@ -299,6 +345,12 @@ private:
 
     /// Image subresource range
     VkImageSubresourceRange m_subresource_range;
+
+    /// Current access mask
+    VkAccessFlags m_accessMask = 0;
+
+    /// Current pipeline stage
+    VkPipelineStageFlags m_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 };
 
 /**

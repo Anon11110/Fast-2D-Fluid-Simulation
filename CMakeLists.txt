@@ -26,6 +26,7 @@ endif()
 add_executable(VkFluidSimulation 
     src/main.cpp
     src/FluidRenderer.cpp
+    src/Simulation.cpp
 )
 
 target_include_directories(VkFluidSimulation PRIVATE

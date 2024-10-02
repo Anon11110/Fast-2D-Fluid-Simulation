@@ -61,6 +61,9 @@ int run(int argc, char *argv[])
         double current_time = glfwGetTime();
         float delta_time = static_cast<float>(current_time - fluid_renderer->GetLastFrameTime());
         fluid_renderer->SetLastFrameTime(current_time);
+
+        FluidSimulation::FrameTimeInfo frame_context{current_time, delta_time};
+        fluid_renderer->OnCompute(cmd_buffer, frame_context);
     };
 
     app.on_destroy = [&]()

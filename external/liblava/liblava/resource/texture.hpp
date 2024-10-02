@@ -102,7 +102,9 @@ struct texture : entity {
                 uv2 size,
                 VkFormat format,
                 layer::list const& layers = {},
-                texture_type type = texture_type::tex_2d);
+                texture_type type = texture_type::tex_2d,
+                VkSamplerAddressMode sampler_address_mode = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+                VkImageUsageFlags usage_flags = 0);
 
     /**
      * @brief Destroy the texture
@@ -168,6 +170,10 @@ struct texture : entity {
      */
     VkFormat get_format() const {
         return m_img ? m_img->get_format() : VK_FORMAT_UNDEFINED;
+    }
+
+    VkSampler get_sampler() const {
+        return m_sampler;
     }
 
 private:

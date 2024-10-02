@@ -5,6 +5,7 @@ namespace FluidSimulation
 FluidRenderer::FluidRenderer(lava::engine &app) : app_(app)
 {
     swapchain_images_count_ = app_.target->get_frame_count();
+    simulation_ = Simulation::make(app);
     AddShaderMappings();
     CreateDescriptorPool();
     CreateDescriptorSets();
@@ -151,6 +152,11 @@ void FluidRenderer::CreatePipeline()
 
         vkCmdDraw(cmd_buffer, 6, 1, 0, 0);
     };
+}
+
+void FluidRenderer::OnCompute(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame_context)
+{
+    simulation_->OnUpdate(cmd_buffer, frame_context);
 }
 
 void FluidRenderer::OnRender(uint32_t frame, VkCommandBuffer cmd_buffer)

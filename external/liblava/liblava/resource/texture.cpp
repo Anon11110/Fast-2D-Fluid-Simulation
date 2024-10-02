@@ -17,7 +17,9 @@ bool texture::create(device::ptr device,
                      uv2 size,
                      VkFormat format,
                      layer::list const& l,
-                     texture_type t) {
+                     texture_type t,
+                     VkSamplerAddressMode sampler_address_mode,
+                     VkImageUsageFlags usage_flags) {
     m_layers = l;
     m_type = t;
 
@@ -31,7 +33,6 @@ bool texture::create(device::ptr device,
         m_layers.push_back(layer);
     }
 
-    VkSamplerAddressMode sampler_address_mode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     if (m_type == texture_type::array || m_type == texture_type::cube_map)
         sampler_address_mode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 
@@ -73,6 +74,8 @@ bool texture::create(device::ptr device,
     m_img->set_level_count(to_ui32(m_layers.front().levels.size()));
     m_img->set_layer_count(to_ui32(m_layers.size()));
     m_img->set_view_type(view_type);
+    if (usage_flags != 0)
+        m_img->set_usage(usage_flags);
 
     if (!m_img->create(device, size, VMA_MEMORY_USAGE_GPU_ONLY)) {
         logger()->error("create texture image");

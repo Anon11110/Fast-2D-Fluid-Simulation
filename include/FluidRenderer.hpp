@@ -2,6 +2,7 @@
 #ifndef FLUID_RENDERER_HPP
 #define FLUID_RENDERER_HPP
 
+#include "Simulation.hpp"
 #include <liblava/lava.hpp>
 
 namespace FluidSimulation
@@ -15,6 +16,7 @@ class FluidRenderer
 
     void Destroy();
 
+    void OnCompute(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame_context);
     void OnRender(uint32_t frame, VkCommandBuffer cmd_buffer);
 
     [[nodiscard]] lava::render_pipeline::s_ptr GetPipeline() const
@@ -47,6 +49,8 @@ class FluidRenderer
     void CreatePipeline();
 
     lava::engine &app_;
+
+    Simulation::s_ptr simulation_;
 
     double last_frame_time_ = 0;
 
