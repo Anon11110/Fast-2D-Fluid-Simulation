@@ -1,0 +1,69 @@
+
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, rg16f) uniform readonly image2D velocity_texture;
+layout(set = 0, binding = 1, r16f) uniform writeonly image2D divergence_texture;
+
+layout(push_constant) uniform PushConstants
+{
+    float current_time;
+    float delta_time;
+    int texture_width;
+    int texture_height;
+    float fluid_density;
+    float vorticity_strength;
+    bool reset_divergence;
+} push_constants;
+
+vec2 LoadVelocity(ivec2 coords)
+{
+    vec2 wrap = vec2(1.0);
+
+    if (coords.x < 0 || coords.x >= push_constants.texture_width)
+    {
+        wrap.x = -1.0;
+    }
+    if (coords.y < 0 || coords.y >= push_constants.texture_height)
+    {
+        wrap.y = -1.0;
+    }
+
+    coords = clamp(coords, ivec2(0), ivec2(push_constants.texture_width - 1, push_constants.texture_height - 1));
+    vec2 velocity = imageLoad(velocity_texture, coords).rg;
+
+    return wrap * velocity;
+}
+
+void main()
+{
+    ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel_coords.x < 0 || pixel_coords.x >= push_constants.texture_width ||
+        pixel_coords.y < 0 || pixel_coords.y >= push_constants.texture_height)
+    {
+        return;
+    }
+
+    float grid_spacing = max(1.0 / push_constants.texture_width, 1.0 / push_constants.texture_height);
+
+    vec2 velocity = LoadVelocity(pixel_coords);
+    vec2 velocity_right = LoadVelocity(pixel_coords + ivec2(1, 0));
+    vec2 velocity_left = LoadVelocity(pixel_coords + ivec2(-1, 0));
+    vec2 velocity_up = LoadVelocity(pixel_coords + ivec2(0, 1));
+    vec2 velocity_down = LoadVelocity(pixel_coords + ivec2(0, -1));
+
+    // Calculate divergence using incompressibility condition
+    float divergence = 0.5 / grid_spacing * (velocity_right.x - velocity_left.x + velocity_up.y - velocity_down.y);
+
+    if (push_constants.reset_divergence)
+    {
+        divergence = 0.0;
+    }
+
+    imageStore(divergence_texture, pixel_coords, vec4(divergence, 0.0, 0.0, 1.0));
+}
+
+
+
+

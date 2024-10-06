@@ -1,0 +1,62 @@
+
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, r16f) uniform readonly image2D divergence_texture;
+layout(set = 0, binding = 1, r16f) uniform readonly image2D previous_pressure_texture;
+layout(set = 0, binding = 2, r16f) uniform writeonly image2D pressure_texture;
+
+layout(push_constant) uniform PushConstants
+{
+    float current_time;
+    float delta_time;
+    int texture_width;
+    int texture_height;
+    float fluid_density;
+    float vorticity_strength;
+    bool reset_pressure;
+} push_constants;
+
+float LoadPressure(ivec2 coords)
+{
+    coords.x = (coords.x < push_constants.texture_width) ?
+        ((coords.x < 0) ? abs(coords.x) - 1 : coords.x) :
+        (2 * push_constants.texture_width - coords.x - 1);
+
+    coords.y = (coords.y < push_constants.texture_height) ?
+        ((coords.y < 0) ? abs(coords.y) - 1 : coords.y) :
+        (2 * push_constants.texture_height - coords.y - 1);
+
+    return imageLoad(previous_pressure_texture, coords).r;
+}
+
+void main()
+{
+    ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel_coords.x < 0 || pixel_coords.x >= push_constants.texture_width ||
+        pixel_coords.y < 0 || pixel_coords.y >= push_constants.texture_height)
+    {
+        return;
+    }
+
+    float divergence = imageLoad(divergence_texture, pixel_coords).r;
+
+    float pressure = LoadPressure(pixel_coords);
+    float pressure_right = LoadPressure(pixel_coords + ivec2(2, 0));
+    float pressure_left = LoadPressure(pixel_coords + ivec2(-2, 0));
+    float pressure_up = LoadPressure(pixel_coords + ivec2(0, 2));
+    float pressure_down = LoadPressure(pixel_coords + ivec2(0, -2));
+
+    float grid_spacing = max(1.0 / push_constants.texture_width, 1.0 / push_constants.texture_height);
+
+    // Update pressure using Jacobi iteration
+    pressure = 0.25 * (pressure_right + pressure_left + pressure_up + pressure_down - divergence * grid_spacing * grid_spacing);
+
+    if (push_constants.reset_pressure)
+    {
+        pressure = 0.0;
+    }
+
+    imageStore(pressure_texture, pixel_coords, vec4(pressure, 0.0, 0.0, 1.0));
+}

@@ -6,14 +6,6 @@
 
 using namespace lava;
 
-ui32 vert_shader[] = {
-#include "res/triangle/vertex.u32"
-};
-
-ui32 frag_shader[] = {
-#include "res/triangle/fragment.u32"
-};
-
 int run(int argc, char *argv[])
 {
     frame_env env;

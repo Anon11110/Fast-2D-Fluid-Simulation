@@ -39,6 +39,16 @@ class Simulation
         return velocity_field_texture_;
     }
 
+    [[nodiscard]] lava::texture::s_ptr GetDivergenceTexture() const
+    {
+        return divergence_field_texture_;
+    }
+
+    [[nodiscard]] lava::texture::s_ptr GetPressureTexture() const
+    {
+        return pressure_field_texture_A_;
+    }
+
     bool reset_flag_ = true;
 
     using s_ptr = std::shared_ptr<Simulation>;
@@ -69,6 +79,22 @@ class Simulation
     VkDescriptorSet advect_descriptor_set_{};
     lava::pipeline_layout::s_ptr advect_pipeline_layout_;
     lava::compute_pipeline::s_ptr advect_pipeline_;
+
+    // Divergence calculation
+    lava::texture::s_ptr divergence_field_texture_;
+    lava::descriptor::s_ptr divergence_descriptor_set_layout_;
+    VkDescriptorSet divergence_descriptor_set_{};
+    lava::pipeline_layout::s_ptr divergence_pipeline_layout_;
+    lava::compute_pipeline::s_ptr divergence_pipeline_;
+
+    // Pressure calculation
+    lava::texture::s_ptr pressure_field_texture_A_;
+    lava::texture::s_ptr pressure_field_texture_B_;
+    lava::descriptor::s_ptr pressure_descriptor_set_layout_;
+    VkDescriptorSet pressure_descriptor_set_A_{};
+    VkDescriptorSet pressure_descriptor_set_B_{};
+    lava::pipeline_layout::s_ptr pressure_pipeline_layout_;
+    lava::compute_pipeline::s_ptr pressure_pipeline_;
 
 
 };

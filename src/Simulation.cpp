@@ -28,12 +28,38 @@ Simulation::~Simulation()
         advect_pipeline_layout_->destroy();
     if (advect_pipeline_)
         advect_pipeline_->destroy();
+
+    // Divergence calculation
+    if (divergence_field_texture_)
+        divergence_field_texture_->destroy();
+    if (divergence_descriptor_set_layout_)
+        divergence_descriptor_set_layout_->destroy();
+    if (divergence_pipeline_layout_)
+        divergence_pipeline_layout_->destroy();
+    if (divergence_pipeline_)
+        divergence_pipeline_->destroy();
+
+    // Pressure calculation
+    if (pressure_field_texture_A_)
+        pressure_field_texture_A_->destroy();
+    if (pressure_field_texture_B_)
+        pressure_field_texture_B_->destroy();
+    if (pressure_descriptor_set_layout_)
+        pressure_descriptor_set_layout_->destroy();
+    if (pressure_pipeline_layout_)
+        pressure_pipeline_layout_->destroy();
+    if (pressure_pipeline_)
+        pressure_pipeline_->destroy();
 }
 
 void Simulation::AddShaderMappings()
 {
     const std::vector<std::pair<std::string, std::string>> file_mappings{
         {"VelocityAdvection.comp", "../shaders/VelocityAdvection.comp"},
+
+        {"DivergenceCalculation.comp", "../shaders/DivergenceCalculation.comp"},
+
+        {"PressureProjection.comp", "../shaders/PressureProjection.comp"},
     };
 
     for (auto &&[name, file] : file_mappings)
@@ -59,6 +85,11 @@ void Simulation::CreateTextures()
     create_texture(velocity_field_texture_, VK_FORMAT_R16G16_SFLOAT,
                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT);
     create_texture(advected_velocity_field_texture_, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, {});
+    create_texture(divergence_field_texture_, VK_FORMAT_R16_SFLOAT,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, {});
+    create_texture(pressure_field_texture_A_, VK_FORMAT_R16_SFLOAT,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+    create_texture(pressure_field_texture_B_, VK_FORMAT_R16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, {});
 }
 
 void Simulation::CreateDescriptorPool()
@@ -85,6 +116,43 @@ void Simulation::CreateDescriptorSets()
         }
 
         advect_descriptor_set_ = advect_descriptor_set_layout_->allocate(descriptor_pool_->get());
+    }
+
+    // Divergence calculation
+    {
+        divergence_descriptor_set_layout_ = lava::descriptor::make();
+        divergence_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                       VK_SHADER_STAGE_COMPUTE_BIT); // Advected velocity field
+        divergence_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                       VK_SHADER_STAGE_COMPUTE_BIT); // Divergence field
+
+        if (!divergence_descriptor_set_layout_->create(app_.device))
+        {
+            lava::logger()->error("Failed to create divergence descriptor set layout.");
+            throw std::runtime_error("Failed to create divergence descriptor set layout.");
+        }
+
+        divergence_descriptor_set_ = divergence_descriptor_set_layout_->allocate(descriptor_pool_->get());
+    }
+
+    // Pressure calculation
+    {
+        pressure_descriptor_set_layout_ = lava::descriptor::make();
+        pressure_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                     VK_SHADER_STAGE_COMPUTE_BIT); // Divergence field
+        pressure_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                     VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field A
+        pressure_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                     VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field B
+
+        if (!pressure_descriptor_set_layout_->create(app_.device))
+        {
+            lava::logger()->error("Failed to create pressure descriptor set layout.");
+            throw std::runtime_error("Failed to create pressure descriptor set layout.");
+        }
+
+        pressure_descriptor_set_A_ = pressure_descriptor_set_layout_->allocate(descriptor_pool_->get());
+        pressure_descriptor_set_B_ = pressure_descriptor_set_layout_->allocate(descriptor_pool_->get());
     }
 }
 
@@ -126,6 +194,12 @@ void Simulation::SetupPipelines()
 
     create_pipeline(advect_pipeline_, "VelocityAdvection.comp", advect_descriptor_set_layout_,
                     VK_SHADER_STAGE_COMPUTE_BIT, advect_pipeline_layout_);
+
+    create_pipeline(divergence_pipeline_, "DivergenceCalculation.comp", divergence_descriptor_set_layout_,
+                    VK_SHADER_STAGE_COMPUTE_BIT, divergence_pipeline_layout_);
+
+    create_pipeline(pressure_pipeline_, "PressureProjection.comp", pressure_descriptor_set_layout_,
+                    VK_SHADER_STAGE_COMPUTE_BIT, pressure_pipeline_layout_);
 }
 
 void Simulation::UpdateDescriptorSets()
@@ -159,6 +233,40 @@ void Simulation::UpdateDescriptorSets()
 
         write_descriptor_sets(advect_descriptor_set_, {velocity_field_info, advected_velocity_field_info},
                               {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+    }
+
+    // Divergence calculation
+    {
+        VkDescriptorImageInfo advected_velocity_field_info = {
+            .sampler = VK_NULL_HANDLE,
+            .imageView = advected_velocity_field_texture_->get_image()->get_view(),
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo divergence_field_info = {.sampler = VK_NULL_HANDLE,
+                                                       .imageView = divergence_field_texture_->get_image()->get_view(),
+                                                       .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        write_descriptor_sets(divergence_descriptor_set_, {advected_velocity_field_info, divergence_field_info},
+                              {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+    }
+
+    // Pressure calculation
+    {
+        VkDescriptorImageInfo divergence_field_info = {.sampler = VK_NULL_HANDLE,
+                                                       .imageView = divergence_field_texture_->get_image()->get_view(),
+                                                       .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo pressure_field_A_info = {.sampler = VK_NULL_HANDLE,
+                                                       .imageView = pressure_field_texture_A_->get_image()->get_view(),
+                                                       .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo pressure_field_B_info = {.sampler = VK_NULL_HANDLE,
+                                                       .imageView = pressure_field_texture_B_->get_image()->get_view(),
+                                                       .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        write_descriptor_sets(
+            pressure_descriptor_set_A_, {divergence_field_info, pressure_field_A_info, pressure_field_B_info},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+        write_descriptor_sets(
+            pressure_descriptor_set_B_, {divergence_field_info, pressure_field_B_info, pressure_field_A_info},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
     }
 }
 
@@ -198,6 +306,57 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
                            sizeof(SimulationConstants), &constants);
 
         vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
+    }
+
+    // Calculate divergence pass
+    {
+        advected_velocity_field_texture_->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        divergence_field_texture_->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        divergence_pipeline_->bind(cmd_buffer);
+
+        vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, divergence_pipeline_->get_layout()->get(),
+                                0, 1, &divergence_descriptor_set_, 0, nullptr);
+
+        vkCmdPushConstants(cmd_buffer, divergence_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(SimulationConstants), &constants);
+
+        vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
+    }
+
+    // Project pressure passes
+    {
+        divergence_field_texture_->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        pressure_pipeline_->bind(cmd_buffer);
+
+        vkCmdPushConstants(cmd_buffer, pressure_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(SimulationConstants), &constants);
+
+        const uint32_t pressure_iterations = 32;
+        assert(pressure_iterations % 2 == 0);
+
+        for (uint32_t i = 0; i < pressure_iterations; i++)
+        {
+            uint32_t phase = i % 2;
+
+            pressure_field_texture_A_->get_image()->transition_layout(
+                cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, phase ? VK_ACCESS_SHADER_WRITE_BIT : VK_ACCESS_SHADER_READ_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+            pressure_field_texture_B_->get_image()->transition_layout(
+                cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, phase ? VK_ACCESS_SHADER_READ_BIT : VK_ACCESS_SHADER_WRITE_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+            VkDescriptorSet pressure_material = phase ? pressure_descriptor_set_B_ : pressure_descriptor_set_A_;
+
+            vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pressure_pipeline_->get_layout()->get(),
+                                    0, 1, &pressure_material, 0, nullptr);
+
+            vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
+        }
     }
 }
 
