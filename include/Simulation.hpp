@@ -96,6 +96,14 @@ class Simulation
     lava::pipeline_layout::s_ptr pressure_pipeline_layout_;
     lava::compute_pipeline::s_ptr pressure_pipeline_;
 
+    // Velocity Update
+    lava::texture::s_ptr color_field_texture_A_;
+    lava::texture::s_ptr color_field_texture_B_;
+    lava::descriptor::s_ptr velocity_update_set_layout_;
+    VkDescriptorSet velocity_update_descriptor_set_{};
+    lava::pipeline_layout::s_ptr velocity_update_pipeline_layout_;
+    lava::compute_pipeline::s_ptr velocity_update_pipeline_;
+
 
 };
 }

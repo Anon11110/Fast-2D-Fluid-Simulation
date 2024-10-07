@@ -50,6 +50,18 @@ Simulation::~Simulation()
         pressure_pipeline_layout_->destroy();
     if (pressure_pipeline_)
         pressure_pipeline_->destroy();
+
+    // Velocity update
+    if (color_field_texture_A_)
+        color_field_texture_A_->destroy();
+    if (color_field_texture_B_)
+        color_field_texture_B_->destroy();
+    if (velocity_update_set_layout_)
+        velocity_update_set_layout_->destroy();
+    if (velocity_update_pipeline_layout_)
+        velocity_update_pipeline_layout_->destroy();
+    if (velocity_update_pipeline_)
+        velocity_update_pipeline_->destroy();
 }
 
 void Simulation::AddShaderMappings()
@@ -60,6 +72,8 @@ void Simulation::AddShaderMappings()
         {"DivergenceCalculation.comp", "../shaders/DivergenceCalculation.comp"},
 
         {"PressureProjection.comp", "../shaders/PressureProjection.comp"},
+
+        {"VelocityUpdate.comp", "../shaders/VelocityUpdate.comp"},
     };
 
     for (auto &&[name, file] : file_mappings)
@@ -90,6 +104,10 @@ void Simulation::CreateTextures()
     create_texture(pressure_field_texture_A_, VK_FORMAT_R16_SFLOAT,
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
     create_texture(pressure_field_texture_B_, VK_FORMAT_R16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, {});
+    create_texture(color_field_texture_A_, VK_FORMAT_R8G8B8A8_UNORM,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT);
+    create_texture(color_field_texture_B_, VK_FORMAT_R8G8B8A8_UNORM,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT);
 }
 
 void Simulation::CreateDescriptorPool()
@@ -154,6 +172,25 @@ void Simulation::CreateDescriptorSets()
         pressure_descriptor_set_A_ = pressure_descriptor_set_layout_->allocate(descriptor_pool_->get());
         pressure_descriptor_set_B_ = pressure_descriptor_set_layout_->allocate(descriptor_pool_->get());
     }
+
+    // Velocity update
+    {
+        velocity_update_set_layout_ = lava::descriptor::make();
+        velocity_update_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                 VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field A
+        velocity_update_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                 VK_SHADER_STAGE_COMPUTE_BIT); // Advected velocity field
+        velocity_update_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                 VK_SHADER_STAGE_COMPUTE_BIT); // Fixed velocity field
+
+        if (!velocity_update_set_layout_->create(app_.device))
+        {
+            lava::logger()->error("Failed to create velocity descriptor set layout.");
+            throw std::runtime_error("Failed to create velocity descriptor set layout.");
+        }
+
+        velocity_update_descriptor_set_ = velocity_update_set_layout_->allocate(descriptor_pool_->get());
+    }
 }
 
 void Simulation::SetupPipelines()
@@ -200,6 +237,9 @@ void Simulation::SetupPipelines()
 
     create_pipeline(pressure_pipeline_, "PressureProjection.comp", pressure_descriptor_set_layout_,
                     VK_SHADER_STAGE_COMPUTE_BIT, pressure_pipeline_layout_);
+
+    create_pipeline(velocity_update_pipeline_, "VelocityUpdate.comp", velocity_update_set_layout_,
+                    VK_SHADER_STAGE_COMPUTE_BIT, velocity_update_pipeline_layout_);
 }
 
 void Simulation::UpdateDescriptorSets()
@@ -266,6 +306,24 @@ void Simulation::UpdateDescriptorSets()
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
         write_descriptor_sets(
             pressure_descriptor_set_B_, {divergence_field_info, pressure_field_B_info, pressure_field_A_info},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+    }
+
+    // Velocity update
+    {
+        VkDescriptorImageInfo pressure_field_A_info = {.sampler = VK_NULL_HANDLE,
+                                                       .imageView = pressure_field_texture_A_->get_image()->get_view(),
+                                                       .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo advected_velocity_field_info = {
+            .sampler = VK_NULL_HANDLE,
+            .imageView = advected_velocity_field_texture_->get_image()->get_view(),
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo velocity_field_info = {.sampler = VK_NULL_HANDLE,
+                                                     .imageView = velocity_field_texture_->get_image()->get_view(),
+                                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        write_descriptor_sets(
+            velocity_update_descriptor_set_, {pressure_field_A_info, advected_velocity_field_info, velocity_field_info},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
     }
 }
@@ -357,6 +415,25 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
 
             vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
         }
+    }
+
+    // Update velocity pass
+    {
+        pressure_field_texture_A_->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        velocity_field_texture_->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        velocity_update_pipeline_->bind(cmd_buffer);
+
+        vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                velocity_update_pipeline_->get_layout()->get(), 0, 1, &velocity_update_descriptor_set_,
+                                0, nullptr);
+
+        vkCmdPushConstants(cmd_buffer, velocity_update_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(SimulationConstants), &constants);
+
+        vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
     }
 }
 

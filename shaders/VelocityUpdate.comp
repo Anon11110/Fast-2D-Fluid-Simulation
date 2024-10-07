@@ -1,0 +1,65 @@
+
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, r16f) uniform readonly image2D pressure_field;
+layout(set = 0, binding = 1, rg16f) uniform readonly image2D advected_velocity_field;
+layout(set = 0, binding = 2, rg16f) uniform writeonly image2D velocity_field;
+
+layout(push_constant) uniform PushConstants
+{
+    float time;
+    float delta_time;
+    int width;
+    int height;
+    float density;
+    float vorticity;
+    bool clear_velocity;
+} push_constants;
+
+float LoadPressure(ivec2 coords) 
+{
+    coords.x = (coords.x < push_constants.width) ? 
+               ((coords.x < 0) ? abs(coords.x) - 1 : coords.x) : 
+               (2 * push_constants.width - coords.x - 1);
+
+    coords.y = (coords.y < push_constants.height) ? 
+               ((coords.y < 0) ? abs(coords.y) - 1 : coords.y) : 
+               (2 * push_constants.height - coords.y - 1);
+
+    return imageLoad(pressure_field, coords).r;
+}
+
+void main() 
+{
+    ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel_coords.x >= push_constants.width || pixel_coords.y >= push_constants.height) 
+    {
+        return;
+    }
+
+    vec2 uv_scale = vec2(1.0) / vec2(push_constants.width, push_constants.height);
+    float h = max(uv_scale.x, uv_scale.y);
+
+    vec2 velocity = imageLoad(advected_velocity_field, pixel_coords).rg;
+
+    float pressure_right = LoadPressure(pixel_coords + ivec2(1, 0));
+    float pressure_left = LoadPressure(pixel_coords + ivec2(-1, 0));
+    float pressure_up = LoadPressure(pixel_coords + ivec2(0, 1));
+    float pressure_down = LoadPressure(pixel_coords + ivec2(0, -1));
+
+    // Adjust velocity to make the field divergence-free
+    velocity -= 0.5 / h * vec2(pressure_right - pressure_left, pressure_up - pressure_down);
+
+    if (push_constants.clear_velocity) 
+    {
+        velocity = vec2(0.0);
+    }
+
+    imageStore(velocity_field, pixel_coords, vec4(velocity, 0.0, 1.0));
+}
+
+
+
+
