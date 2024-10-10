@@ -62,6 +62,22 @@ Simulation::~Simulation()
         velocity_update_pipeline_layout_->destroy();
     if (velocity_update_pipeline_)
         velocity_update_pipeline_->destroy();
+
+    // Advect color
+    if (advect_color_set_layout_)
+        advect_color_set_layout_->destroy();
+    if (advect_color_pipeline_layout_)
+        advect_color_pipeline_layout_->destroy();
+    if (advect_color_pipeline_)
+        advect_color_pipeline_->destroy();
+
+    // Update color field
+    if (color_update_set_layout_)
+        color_update_set_layout_->destroy();
+    if (color_update_pipeline_layout_)
+        color_update_pipeline_layout_->destroy();
+    if (color_update_pipeline_)
+        color_update_pipeline_->destroy();
 }
 
 void Simulation::AddShaderMappings()
@@ -74,6 +90,10 @@ void Simulation::AddShaderMappings()
         {"PressureProjection.comp", "../shaders/PressureProjection.comp"},
 
         {"VelocityUpdate.comp", "../shaders/VelocityUpdate.comp"},
+
+        {"ColorAdvection.comp", "../shaders/ColorAdvection.comp"},
+
+        {"ColorUpdate.comp", "../shaders/ColorUpdate.comp"},
     };
 
     for (auto &&[name, file] : file_mappings)
@@ -191,6 +211,42 @@ void Simulation::CreateDescriptorSets()
 
         velocity_update_descriptor_set_ = velocity_update_set_layout_->allocate(descriptor_pool_->get());
     }
+
+    // Advect color
+    {
+        advect_color_set_layout_ = lava::descriptor::make();
+        advect_color_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                              VK_SHADER_STAGE_COMPUTE_BIT); // Velocity field
+        advect_color_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                              VK_SHADER_STAGE_COMPUTE_BIT); // Previous color field
+        advect_color_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                              VK_SHADER_STAGE_COMPUTE_BIT); // Advected color field
+
+        if (!advect_color_set_layout_->create(app_.device))
+        {
+            lava::logger()->error("Failed to create advect color descriptor set layout.");
+            throw std::runtime_error("Failed to create advect color descriptor set layout.");
+        }
+
+        advect_color_descriptor_set_ = advect_color_set_layout_->allocate(descriptor_pool_->get());
+    }
+
+    // Color update
+    {
+        color_update_set_layout_ = lava::descriptor::make();
+        color_update_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                              VK_SHADER_STAGE_COMPUTE_BIT); // Temporary color field
+        color_update_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                              VK_SHADER_STAGE_COMPUTE_BIT); // Target color field
+
+        if (!color_update_set_layout_->create(app_.device))
+        {
+            lava::logger()->error("Failed to create color update descriptor set layout.");
+            throw std::runtime_error("Failed to create color update descriptor set layout.");
+        }
+
+        color_update_descriptor_set_ = color_update_set_layout_->allocate(descriptor_pool_->get());
+    }
 }
 
 void Simulation::SetupPipelines()
@@ -240,6 +296,12 @@ void Simulation::SetupPipelines()
 
     create_pipeline(velocity_update_pipeline_, "VelocityUpdate.comp", velocity_update_set_layout_,
                     VK_SHADER_STAGE_COMPUTE_BIT, velocity_update_pipeline_layout_);
+
+    create_pipeline(advect_color_pipeline_, "ColorAdvection.comp", advect_color_set_layout_,
+                    VK_SHADER_STAGE_COMPUTE_BIT, advect_color_pipeline_layout_);
+
+    create_pipeline(color_update_pipeline_, "ColorUpdate.comp", color_update_set_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
+                    color_update_pipeline_layout_);
 }
 
 void Simulation::UpdateDescriptorSets()
@@ -325,6 +387,37 @@ void Simulation::UpdateDescriptorSets()
         write_descriptor_sets(
             velocity_update_descriptor_set_, {pressure_field_A_info, advected_velocity_field_info, velocity_field_info},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+    }
+
+    // Advect color
+    {
+        VkDescriptorImageInfo velocity_field_info = {.sampler = velocity_field_texture_->get_sampler(),
+                                                     .imageView = velocity_field_texture_->get_image()->get_view(),
+                                                     .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo color_field_A_info = {.sampler = color_field_texture_A_->get_sampler(),
+                                                    .imageView = color_field_texture_A_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo color_field_B_info = {.sampler = VK_NULL_HANDLE,
+                                                    .imageView = color_field_texture_B_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        write_descriptor_sets(advect_color_descriptor_set_,
+                              {velocity_field_info, color_field_A_info, color_field_B_info},
+                              {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+    }
+
+    // Update color field
+    {
+        VkDescriptorImageInfo color_field_A_info = {.sampler = color_field_texture_A_->get_sampler(),
+                                                    .imageView = color_field_texture_A_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo color_field_B_info = {.sampler = color_field_texture_B_->get_sampler(),
+                                                    .imageView = color_field_texture_B_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        write_descriptor_sets(color_update_descriptor_set_, {color_field_B_info, color_field_A_info},
+                              {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
     }
 }
 
@@ -434,6 +527,62 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
                            sizeof(SimulationConstants), &constants);
 
         vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
+    }
+
+    // Advect color pass
+    {
+        velocity_field_texture_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                                VK_ACCESS_SHADER_READ_BIT,
+                                                                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        color_field_texture_A_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                               VK_ACCESS_SHADER_READ_BIT,
+                                                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        color_field_texture_B_->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        advect_color_pipeline_->bind(cmd_buffer);
+
+        vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, advect_color_pipeline_->get_layout()->get(),
+                                0, 1, &advect_color_descriptor_set_, 0, nullptr);
+
+        vkCmdPushConstants(cmd_buffer, advect_color_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(SimulationConstants), &constants);
+
+        vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
+    }
+
+    // Update color texture
+    {
+        color_field_texture_A_->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        color_field_texture_B_->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        color_update_pipeline_->bind(cmd_buffer);
+
+        vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, color_update_pipeline_->get_layout()->get(),
+                                0, 1, &color_update_descriptor_set_, 0, nullptr);
+
+        vkCmdPushConstants(cmd_buffer, color_update_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(SimulationConstants), &constants);
+
+        vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
+    }
+
+    // Transition resources for rendering
+    {
+        pressure_field_texture_A_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                                  VK_ACCESS_SHADER_READ_BIT,
+                                                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        divergence_field_texture_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                                  VK_ACCESS_SHADER_READ_BIT,
+                                                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        velocity_field_texture_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                                VK_ACCESS_SHADER_READ_BIT,
+                                                                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        color_field_texture_A_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                               VK_ACCESS_SHADER_READ_BIT,
+                                                               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
 }
 

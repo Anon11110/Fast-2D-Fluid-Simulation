@@ -1,4 +1,5 @@
 #include "FluidRenderer.hpp"
+#include "Simulation.hpp"
 #include "imgui.h"
 #include "liblava/lava.hpp"
 #define GLFW_INCLUDE_NONE
@@ -58,8 +59,7 @@ int run(int argc, char *argv[])
         fluid_renderer->OnCompute(cmd_buffer, frame_context);
     };
 
-    app.on_destroy = [&]()
-    {
+    app.on_destroy = [&]() {
 
     };
 
@@ -106,7 +106,7 @@ int run(int argc, char *argv[])
                              ImGui::End();
                          });
 
-    app.add_run_end([&]() { });
+    app.add_run_end([&]() {});
 
     auto result = app.run();
     if (result != 0)

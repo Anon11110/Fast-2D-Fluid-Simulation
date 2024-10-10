@@ -1,0 +1,76 @@
+
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D velocity_texture;
+layout(set = 0, binding = 1) uniform sampler2D color_texture;
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D output_color_texture;
+
+layout(push_constant) uniform PushConstants
+{
+    float current_time;
+    float delta_time;
+    int texture_width;
+    int texture_height;
+    float fluid_density;
+    float vorticity_strength;
+    bool reset_color;
+} push_constants;
+
+const int advect_iterations = 12;
+
+vec2 GetVelocity(vec2 uv)
+{
+    vec2 velocity = texture(velocity_texture, uv).rg;
+    vec2 wrap = vec2(1.0);
+
+    if (uv.x < 0.0 || uv.x > 1.0) wrap.x = -1.0;
+    if (uv.y < 0.0 || uv.y > 1.0) wrap.y = -1.0;
+
+    return wrap * velocity;
+}
+
+vec2 ComputeColorGradient(vec2 uv, vec2 pixel_size, float step_size)
+{
+    vec3 color_right = texture(color_texture, uv + vec2(pixel_size.x, 0.0)).rgb;
+    vec3 color_left = texture(color_texture, uv + vec2(-pixel_size.x, 0.0)).rgb;
+    vec3 color_up = texture(color_texture, uv + vec2(0.0, pixel_size.y)).rgb;
+    vec3 color_down = texture(color_texture, uv + vec2(0.0, -pixel_size.y)).rgb;
+
+    return 0.5 * vec2(length(color_right - color_left), length(color_up - color_down)) / step_size;
+}
+
+void main()
+{
+    ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel_coords.x < 0 || pixel_coords.x >= push_constants.texture_width ||
+        pixel_coords.y < 0 || pixel_coords.y >= push_constants.texture_height)
+    {
+        return;
+    }
+
+    vec2 pixel_size = vec2(1.0) / vec2(push_constants.texture_width, push_constants.texture_height);
+    vec2 uv_coords = (vec2(pixel_coords) + 0.5) * pixel_size;
+    float step_size = max(pixel_size.x, pixel_size.y);
+    float local_delta_time = push_constants.delta_time / float(advect_iterations);
+
+    // Advect color using semi-Lagrangian method
+    for (int i = 0; i < advect_iterations; i++)
+    {
+        vec2 color_gradient = ComputeColorGradient(uv_coords, pixel_size, step_size);
+        vec2 velocity = GetVelocity(uv_coords);
+
+        velocity -= velocity * min(dot(velocity, color_gradient), 0.0);
+        uv_coords -= velocity * pixel_size / step_size * local_delta_time;
+    }
+
+    vec4 advected_color = texture(color_texture, uv_coords);
+
+    if (push_constants.reset_color)
+    {
+        advected_color = vec4(0.0, 0.0, 0.0, 1.0);
+    }
+
+    imageStore(output_color_texture, pixel_coords, advected_color);
+}

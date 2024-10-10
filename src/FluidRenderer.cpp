@@ -47,6 +47,11 @@ void FluidRenderer::Destroy()
     lava::logger()->debug("Fluid renderer resources destroyed.");
 }
 
+void FluidRenderer::OnCompute(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame_context)
+{
+    simulation_->OnUpdate(cmd_buffer, frame_context);
+}
+
 void FluidRenderer::AddShaderMappings()
 {
     std::vector<std::pair<std::string, std::string>> file_mappings{
@@ -82,7 +87,15 @@ void FluidRenderer::CreateDescriptorPool()
 void FluidRenderer::CreateDescriptorSets()
 {
     render_descriptor_set_layout_ = lava::descriptor::make();
-    // TODO: add bindings
+
+    render_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                               VK_SHADER_STAGE_FRAGMENT_BIT); // Velocity texture
+    render_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                               VK_SHADER_STAGE_FRAGMENT_BIT); // Divergence texture
+    render_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                               VK_SHADER_STAGE_FRAGMENT_BIT); // Pressure texture
+    render_descriptor_set_layout_->add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                               VK_SHADER_STAGE_FRAGMENT_BIT); // Color texture
 
     if (!render_descriptor_set_layout_->create(app_.device))
     {
@@ -101,7 +114,54 @@ void FluidRenderer::CreateDescriptorSets()
 
 void FluidRenderer::UpdateDescriptorSets()
 {
-    // TODO
+    auto velocity_texture = simulation_->GetVelocityTexture();
+    VkDescriptorImageInfo velocity_texture_info = {.sampler = velocity_texture->get_sampler(),
+                                                   .imageView = velocity_texture->get_image()->get_view(),
+                                                   .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+    auto divergence_texture = simulation_->GetDivergenceTexture();
+    VkDescriptorImageInfo divergence_texture_info = {.sampler = divergence_texture->get_sampler(),
+                                                     .imageView = divergence_texture->get_image()->get_view(),
+                                                     .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+    auto pressure_texture = simulation_->GetPressureTexture();
+    VkDescriptorImageInfo pressure_texture_info = {.sampler = pressure_texture->get_sampler(),
+                                                   .imageView = pressure_texture->get_image()->get_view(),
+                                                   .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+    auto color_texture = simulation_->GetColorTexture();
+    VkDescriptorImageInfo color_texture_info = {.sampler = color_texture->get_sampler(),
+                                                .imageView = color_texture->get_image()->get_view(),
+                                                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+    std::vector<VkWriteDescriptorSet> write_descriptor_sets = {
+        VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                             .dstSet = render_descriptor_set_,
+                             .dstBinding = 0,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                             .pImageInfo = &velocity_texture_info},
+        VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                             .dstSet = render_descriptor_set_,
+                             .dstBinding = 1,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                             .pImageInfo = &divergence_texture_info},
+        VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                             .dstSet = render_descriptor_set_,
+                             .dstBinding = 2,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                             .pImageInfo = &pressure_texture_info},
+        VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                             .dstSet = render_descriptor_set_,
+                             .dstBinding = 3,
+                             .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                             .pImageInfo = &color_texture_info}};
+
+    app_.device->vkUpdateDescriptorSets(uint32_t(write_descriptor_sets.size()), write_descriptor_sets.data(), 0,
+                                        nullptr);
 }
 
 void FluidRenderer::CreatePipeline()
@@ -152,11 +212,6 @@ void FluidRenderer::CreatePipeline()
 
         vkCmdDraw(cmd_buffer, 6, 1, 0, 0);
     };
-}
-
-void FluidRenderer::OnCompute(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame_context)
-{
-    simulation_->OnUpdate(cmd_buffer, frame_context);
 }
 
 void FluidRenderer::OnRender(uint32_t frame, VkCommandBuffer cmd_buffer)

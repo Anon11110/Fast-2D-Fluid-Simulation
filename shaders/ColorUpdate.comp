@@ -1,0 +1,72 @@
+
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, rgba8) uniform readonly image2D source_texture;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D destination_texture;
+
+layout(push_constant) uniform PushConstants
+{
+    float current_time;
+    float delta_time;
+    int texture_width;
+    int texture_height;
+    float fluid_density;
+    float vorticity_strength;
+    bool clear_colors;
+} push_constants;
+
+void main()
+{
+    ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
+
+    if (pixel_coords.x < 0 || pixel_coords.x >= push_constants.texture_width ||
+        pixel_coords.y < 0 || pixel_coords.y >= push_constants.texture_height)
+    {
+        return;
+    }
+
+    vec4 pixel_color = imageLoad(source_texture, pixel_coords);
+
+    if (push_constants.clear_colors) 
+    {
+        vec2 center = vec2(push_constants.texture_width, push_constants.texture_height) * 0.5;
+        vec2 pixel_offset = vec2(pixel_coords) - center;
+        float distance_from_center = length(pixel_offset);
+
+        float scaled_distance = distance_from_center / (max(push_constants.texture_width, push_constants.texture_height) * 0.5);
+
+        // A smooth sinusoidal wave pattern
+        float wave_pattern = sin(scaled_distance * 10.0 + push_constants.current_time * 2.0) * 0.5 + 0.5;
+
+        // Add directional flow effect based on pixel coordinates
+        float flow_effect = sin(dot(pixel_offset, vec2(1.0, 0.5)) * 0.05 + push_constants.current_time * 3.0) * 0.5 + 0.5;
+
+        // Combine wave pattern and flow effect for more fluidity
+        float combined_pattern = mix(wave_pattern, flow_effect, 0.5);
+
+        if (combined_pattern < 0.33) 
+        {
+            pixel_color = vec4(1.0, 0.55, 0.0, 1.0);
+        } 
+        else if (combined_pattern < 0.66) 
+        {
+            pixel_color = vec4(0.0, 0.8, 0.6, 1.0);
+        } 
+        else 
+        {
+            pixel_color = vec4(0.1, 0.6, 0.9, 1.0);
+        }
+
+    }
+
+    vec2 uv_scale = vec2(1.0) / vec2(push_constants.texture_width, push_constants.texture_height);
+    vec2 texel_uv = (vec2(pixel_coords) + vec2(0.5)) * uv_scale;
+
+    imageStore(destination_texture, pixel_coords, pixel_color);
+}
+
+
+
+

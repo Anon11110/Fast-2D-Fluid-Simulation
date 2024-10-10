@@ -49,6 +49,11 @@ class Simulation
         return pressure_field_texture_A_;
     }
 
+    [[nodiscard]] lava::texture::s_ptr GetColorTexture() const
+    {
+        return color_field_texture_A_;
+    }
+
     bool reset_flag_ = true;
 
     using s_ptr = std::shared_ptr<Simulation>;
@@ -104,6 +109,17 @@ class Simulation
     lava::pipeline_layout::s_ptr velocity_update_pipeline_layout_;
     lava::compute_pipeline::s_ptr velocity_update_pipeline_;
 
+    // Advect color dye
+    lava::descriptor::s_ptr advect_color_set_layout_;
+    VkDescriptorSet advect_color_descriptor_set_{};
+    lava::pipeline_layout::s_ptr advect_color_pipeline_layout_;
+    lava::compute_pipeline::s_ptr advect_color_pipeline_;
+
+    // Update color field
+    lava::descriptor::s_ptr color_update_set_layout_;
+    VkDescriptorSet color_update_descriptor_set_{};
+    lava::pipeline_layout::s_ptr color_update_pipeline_layout_;
+    lava::compute_pipeline::s_ptr color_update_pipeline_;
 
 };
 }
