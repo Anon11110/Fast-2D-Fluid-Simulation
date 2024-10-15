@@ -86,6 +86,9 @@ int run(int argc, char *argv[])
             return false;
         });
 
+    int selected_method = static_cast<int>(fluid_renderer->simulation_->GetPressureProjectionMethod());
+    int jacobi_iterations = fluid_renderer->simulation_->GetPressureJacobiIterations();
+
     app.imgui.layers.add("info",
                          [&]()
                          {
@@ -100,6 +103,23 @@ int run(int argc, char *argv[])
                              ImGui::SameLine();
 
                              ImGui::Text("frames: %d", app.target->get_frame_count());
+
+                             const char *methods[] = {"Jacobi-based", "Kernel-based"};
+
+                             if (ImGui::Combo("Pressure Projection", &selected_method, methods, IM_ARRAYSIZE(methods)))
+                             {
+                                 fluid_renderer->simulation_->SetPressureProjectionMethod(
+                                     static_cast<FluidSimulation::PressureProjectionMethod>(selected_method));
+                             }
+
+                             if (selected_method == 0)
+                             {
+                                 if (ImGui::SliderInt("Jacobi Iterations", &jacobi_iterations, 1,
+                                                      100)) // Range: 1-100 iterations
+                                 {
+                                     fluid_renderer->simulation_->SetPressureJacobiIterations(jacobi_iterations);
+                                 }
+                             }
 
                              app.draw_about();
 

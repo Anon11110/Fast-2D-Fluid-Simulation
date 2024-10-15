@@ -4,6 +4,9 @@ namespace FluidSimulation
 {
 Simulation::Simulation(lava::engine &app) : app_(app)
 {
+    const lava::uv2 window_size = app_.target->get_size();
+    group_count_x_ = (window_size.x - 1) / 16 + 1;
+    group_count_y_ = (window_size.y - 1) / 16 + 1;
     AddShaderMappings();
     CreateTextures();
     CreateDescriptorPool();
@@ -39,17 +42,25 @@ Simulation::~Simulation()
     if (divergence_pipeline_)
         divergence_pipeline_->destroy();
 
-    // Pressure calculation
-    if (pressure_field_texture_A_)
-        pressure_field_texture_A_->destroy();
-    if (pressure_field_texture_B_)
-        pressure_field_texture_B_->destroy();
-    if (pressure_descriptor_set_layout_)
-        pressure_descriptor_set_layout_->destroy();
-    if (pressure_pipeline_layout_)
-        pressure_pipeline_layout_->destroy();
-    if (pressure_pipeline_)
-        pressure_pipeline_->destroy();
+    // Pressure calculation using Jacobi iteration
+    if (pressure_field_jacobi_texture_A_)
+        pressure_field_jacobi_texture_A_->destroy();
+    if (pressure_field_jacobi_texture_B_)
+        pressure_field_jacobi_texture_B_->destroy();
+    if (pressure_jacobi_descriptor_set_layout_)
+        pressure_jacobi_descriptor_set_layout_->destroy();
+    if (pressure_jacobi_pipeline_layout_)
+        pressure_jacobi_pipeline_layout_->destroy();
+    if (pressure_jacobi_pipeline_)
+        pressure_jacobi_pipeline_->destroy();
+
+    // Pressure calculation using unified kernel
+    if (pressure_kernel_descriptor_set_layout_)
+        pressure_kernel_descriptor_set_layout_->destroy();
+    if (pressure_kernel_pipeline_layout_)
+        pressure_kernel_pipeline_layout_->destroy();
+    if (pressure_kernel_pipeline_)
+        pressure_kernel_pipeline_->destroy();
 
     // Velocity update
     if (color_field_texture_A_)
@@ -87,7 +98,9 @@ void Simulation::AddShaderMappings()
 
         {"DivergenceCalculation.comp", "../shaders/DivergenceCalculation.comp"},
 
-        {"PressureProjection.comp", "../shaders/PressureProjection.comp"},
+        {"PressureProjectionJacobi.comp", "../shaders/PressureProjectionJacobi.comp"},
+
+        {"PressureProjectionKernel.comp", "../shaders/PressureProjectionKernel.comp"},
 
         {"VelocityUpdate.comp", "../shaders/VelocityUpdate.comp"},
 
@@ -121,9 +134,11 @@ void Simulation::CreateTextures()
     create_texture(advected_velocity_field_texture_, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, {});
     create_texture(divergence_field_texture_, VK_FORMAT_R16_SFLOAT,
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, {});
-    create_texture(pressure_field_texture_A_, VK_FORMAT_R16_SFLOAT,
-                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
-    create_texture(pressure_field_texture_B_, VK_FORMAT_R16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, {});
+    create_texture(pressure_field_jacobi_texture_A_, VK_FORMAT_R16_SFLOAT,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                   VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+    create_texture(pressure_field_jacobi_texture_B_, VK_FORMAT_R16_SFLOAT,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, {});
     create_texture(color_field_texture_A_, VK_FORMAT_R8G8B8A8_UNORM,
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT);
     create_texture(color_field_texture_B_, VK_FORMAT_R8G8B8A8_UNORM,
@@ -173,24 +188,41 @@ void Simulation::CreateDescriptorSets()
         divergence_descriptor_set_ = divergence_descriptor_set_layout_->allocate(descriptor_pool_->get());
     }
 
-    // Pressure calculation
+    // Pressure calculation using Jacobi iteration
     {
-        pressure_descriptor_set_layout_ = lava::descriptor::make();
-        pressure_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        pressure_jacobi_descriptor_set_layout_ = lava::descriptor::make();
+        pressure_jacobi_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                      VK_SHADER_STAGE_COMPUTE_BIT); // Divergence field
-        pressure_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        pressure_jacobi_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                      VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field A
-        pressure_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        pressure_jacobi_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                      VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field B
 
-        if (!pressure_descriptor_set_layout_->create(app_.device))
+        if (!pressure_jacobi_descriptor_set_layout_->create(app_.device))
         {
             lava::logger()->error("Failed to create pressure descriptor set layout.");
             throw std::runtime_error("Failed to create pressure descriptor set layout.");
         }
 
-        pressure_descriptor_set_A_ = pressure_descriptor_set_layout_->allocate(descriptor_pool_->get());
-        pressure_descriptor_set_B_ = pressure_descriptor_set_layout_->allocate(descriptor_pool_->get());
+        pressure_jacobi_descriptor_set_A_ = pressure_jacobi_descriptor_set_layout_->allocate(descriptor_pool_->get());
+        pressure_jacobi_descriptor_set_B_ = pressure_jacobi_descriptor_set_layout_->allocate(descriptor_pool_->get());
+    }
+
+    // Pressure calculation using unified kernel
+    {
+        pressure_kernel_descriptor_set_layout_ = lava::descriptor::make();
+        pressure_kernel_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                            VK_SHADER_STAGE_COMPUTE_BIT); // Divergence field
+        pressure_kernel_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                            VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field
+
+        if (!pressure_kernel_descriptor_set_layout_->create(app_.device))
+        {
+            lava::logger()->error("Failed to create pressure descriptor set layout.");
+            throw std::runtime_error("Failed to create pressure descriptor set layout.");
+        }
+
+        pressure_kernel_descriptor_set_ = pressure_kernel_descriptor_set_layout_->allocate(descriptor_pool_->get());
     }
 
     // Velocity update
@@ -291,8 +323,11 @@ void Simulation::SetupPipelines()
     create_pipeline(divergence_pipeline_, "DivergenceCalculation.comp", divergence_descriptor_set_layout_,
                     VK_SHADER_STAGE_COMPUTE_BIT, divergence_pipeline_layout_);
 
-    create_pipeline(pressure_pipeline_, "PressureProjection.comp", pressure_descriptor_set_layout_,
-                    VK_SHADER_STAGE_COMPUTE_BIT, pressure_pipeline_layout_);
+    create_pipeline(pressure_jacobi_pipeline_, "PressureProjectionJacobi.comp", pressure_jacobi_descriptor_set_layout_,
+                    VK_SHADER_STAGE_COMPUTE_BIT, pressure_jacobi_pipeline_layout_);
+
+    create_pipeline(pressure_kernel_pipeline_, "PressureProjectionKernel.comp", pressure_kernel_descriptor_set_layout_,
+                    VK_SHADER_STAGE_COMPUTE_BIT, pressure_kernel_pipeline_layout_);
 
     create_pipeline(velocity_update_pipeline_, "VelocityUpdate.comp", velocity_update_set_layout_,
                     VK_SHADER_STAGE_COMPUTE_BIT, velocity_update_pipeline_layout_);
@@ -351,30 +386,47 @@ void Simulation::UpdateDescriptorSets()
                               {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
     }
 
-    // Pressure calculation
+    // Pressure projection using Jacobi iteration
     {
         VkDescriptorImageInfo divergence_field_info = {.sampler = VK_NULL_HANDLE,
                                                        .imageView = divergence_field_texture_->get_image()->get_view(),
                                                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo pressure_field_A_info = {.sampler = VK_NULL_HANDLE,
-                                                       .imageView = pressure_field_texture_A_->get_image()->get_view(),
+                                                       .imageView = pressure_field_jacobi_texture_A_->get_image()->get_view(),
                                                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo pressure_field_B_info = {.sampler = VK_NULL_HANDLE,
-                                                       .imageView = pressure_field_texture_B_->get_image()->get_view(),
+                                                       .imageView = pressure_field_jacobi_texture_B_->get_image()->get_view(),
                                                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
         write_descriptor_sets(
-            pressure_descriptor_set_A_, {divergence_field_info, pressure_field_A_info, pressure_field_B_info},
+            pressure_jacobi_descriptor_set_A_, {divergence_field_info, pressure_field_A_info, pressure_field_B_info},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
         write_descriptor_sets(
-            pressure_descriptor_set_B_, {divergence_field_info, pressure_field_B_info, pressure_field_A_info},
+            pressure_jacobi_descriptor_set_B_, {divergence_field_info, pressure_field_B_info, pressure_field_A_info},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+    }
+
+    // Pressure projection using unified kernel
+    {
+        VkDescriptorImageInfo divergence_field_info = {.sampler = VK_NULL_HANDLE,
+                                                       .imageView = divergence_field_texture_->get_image()->get_view(),
+                                                       .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        // Share the same pressure field texture with Jacobi method
+        VkDescriptorImageInfo pressure_field_info = {.sampler = VK_NULL_HANDLE,
+                                                       .imageView =
+                                                         pressure_field_jacobi_texture_A_->get_image()->get_view(),
+                                                       .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        write_descriptor_sets(
+            pressure_kernel_descriptor_set_, {divergence_field_info, pressure_field_info},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
     }
 
     // Velocity update
     {
         VkDescriptorImageInfo pressure_field_A_info = {.sampler = VK_NULL_HANDLE,
-                                                       .imageView = pressure_field_texture_A_->get_image()->get_view(),
+                                                       .imageView = pressure_field_jacobi_texture_A_->get_image()->get_view(),
                                                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo advected_velocity_field_info = {
             .sampler = VK_NULL_HANDLE,
@@ -421,6 +473,64 @@ void Simulation::UpdateDescriptorSets()
     }
 }
 
+void Simulation::JacobiPressureProjection(VkCommandBuffer cmd_buffer, const SimulationConstants &constants)
+{
+    divergence_field_texture_->get_image()->transition_layout(
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    pressure_jacobi_pipeline_->bind(cmd_buffer);
+
+    vkCmdPushConstants(cmd_buffer, pressure_jacobi_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       sizeof(SimulationConstants), &constants);
+
+    for (uint32_t i = 0; i < pressure_jacobi_iterations_; i++)
+    {
+        uint32_t phase = i % 2;
+
+        pressure_field_jacobi_texture_A_->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, phase ? VK_ACCESS_SHADER_WRITE_BIT : VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        pressure_field_jacobi_texture_B_->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, phase ? VK_ACCESS_SHADER_READ_BIT : VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        VkDescriptorSet pressure_descriptor_set = phase ? pressure_jacobi_descriptor_set_B_ : pressure_jacobi_descriptor_set_A_;
+
+        vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pressure_jacobi_pipeline_->get_layout()->get(), 0,
+                                1, &pressure_descriptor_set, 0, nullptr);
+
+        vkCmdDispatch(cmd_buffer, group_count_x_, group_count_y_, 1);
+    }
+
+    // Swap from textures by handles since the final result is always stored in texture A
+    if (pressure_jacobi_iterations_ % 2 != 0)
+    {
+        std::swap(pressure_field_jacobi_texture_A_, pressure_field_jacobi_texture_B_);
+    }
+}
+
+void Simulation::KernelPressureProjection(VkCommandBuffer cmd_buffer, const SimulationConstants &constants)
+{
+    divergence_field_texture_->get_image()->transition_layout(
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    pressure_field_jacobi_texture_A_->get_image()->transition_layout(
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    pressure_kernel_pipeline_->bind(cmd_buffer);
+
+    vkCmdPushConstants(cmd_buffer, pressure_kernel_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       sizeof(SimulationConstants), &constants);
+
+    vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pressure_kernel_pipeline_->get_layout()->get(),
+                            0, 1, &pressure_kernel_descriptor_set_, 0, nullptr);
+
+    vkCmdDispatch(cmd_buffer, group_count_x_, group_count_y_, 1);
+
+
+}
+
 void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame_context)
 {
     const lava::uv2 window_size = app_.target->get_size();
@@ -436,9 +546,6 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
     constants.reset_color = reset_flag_;
 
     reset_flag_ = false;
-
-    uint32_t group_count_x = (window_size.x - 1) / 16 + 1;
-    uint32_t group_count_y = (window_size.y - 1) / 16 + 1;
 
     // Advect velocity pass
     {
@@ -456,7 +563,7 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
         vkCmdPushConstants(cmd_buffer, advect_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(SimulationConstants), &constants);
 
-        vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
+        vkCmdDispatch(cmd_buffer, group_count_x_, group_count_y_, 1);
     }
 
     // Calculate divergence pass
@@ -474,45 +581,24 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
         vkCmdPushConstants(cmd_buffer, divergence_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(SimulationConstants), &constants);
 
-        vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
+        vkCmdDispatch(cmd_buffer, group_count_x_, group_count_y_, 1);
     }
 
     // Project pressure passes
     {
-        divergence_field_texture_->get_image()->transition_layout(
-            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-
-        pressure_pipeline_->bind(cmd_buffer);
-
-        vkCmdPushConstants(cmd_buffer, pressure_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                           sizeof(SimulationConstants), &constants);
-
-        const uint32_t pressure_iterations = 32;
-        assert(pressure_iterations % 2 == 0);
-
-        for (uint32_t i = 0; i < pressure_iterations; i++)
+        if (pressure_projection_method_ == PressureProjectionMethod::Jacobi)
         {
-            uint32_t phase = i % 2;
-
-            pressure_field_texture_A_->get_image()->transition_layout(
-                cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, phase ? VK_ACCESS_SHADER_WRITE_BIT : VK_ACCESS_SHADER_READ_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-            pressure_field_texture_B_->get_image()->transition_layout(
-                cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, phase ? VK_ACCESS_SHADER_READ_BIT : VK_ACCESS_SHADER_WRITE_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-
-            VkDescriptorSet pressure_material = phase ? pressure_descriptor_set_B_ : pressure_descriptor_set_A_;
-
-            vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pressure_pipeline_->get_layout()->get(),
-                                    0, 1, &pressure_material, 0, nullptr);
-
-            vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
+            JacobiPressureProjection(cmd_buffer, constants);
+        }
+        else if (pressure_projection_method_ == PressureProjectionMethod::Kernel)
+        {
+            KernelPressureProjection(cmd_buffer, constants);
         }
     }
 
     // Update velocity pass
     {
-        pressure_field_texture_A_->get_image()->transition_layout(
+        pressure_field_jacobi_texture_A_->get_image()->transition_layout(
             cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         velocity_field_texture_->get_image()->transition_layout(
             cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -526,7 +612,7 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
         vkCmdPushConstants(cmd_buffer, velocity_update_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(SimulationConstants), &constants);
 
-        vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
+        vkCmdDispatch(cmd_buffer, group_count_x_, group_count_y_, 1);
     }
 
     // Advect color pass
@@ -548,7 +634,7 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
         vkCmdPushConstants(cmd_buffer, advect_color_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(SimulationConstants), &constants);
 
-        vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
+        vkCmdDispatch(cmd_buffer, group_count_x_, group_count_y_, 1);
     }
 
     // Update color texture
@@ -566,12 +652,12 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
         vkCmdPushConstants(cmd_buffer, color_update_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(SimulationConstants), &constants);
 
-        vkCmdDispatch(cmd_buffer, group_count_x, group_count_y, 1);
+        vkCmdDispatch(cmd_buffer, group_count_x_, group_count_y_, 1);
     }
 
     // Transition resources for rendering
     {
-        pressure_field_texture_A_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        pressure_field_jacobi_texture_A_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                                                   VK_ACCESS_SHADER_READ_BIT,
                                                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
         divergence_field_texture_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,

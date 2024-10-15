@@ -25,6 +25,12 @@ struct SimulationConstants
     bool reset_color;
 };
 
+enum class PressureProjectionMethod
+{
+    Jacobi,
+    Kernel
+};
+
 class Simulation
 {
   public:
@@ -46,7 +52,7 @@ class Simulation
 
     [[nodiscard]] lava::texture::s_ptr GetPressureTexture() const
     {
-        return pressure_field_texture_A_;
+        return pressure_field_jacobi_texture_A_;
     }
 
     [[nodiscard]] lava::texture::s_ptr GetColorTexture() const
@@ -54,7 +60,25 @@ class Simulation
         return color_field_texture_A_;
     }
 
-    bool reset_flag_ = true;
+    [[nodiscard]] PressureProjectionMethod GetPressureProjectionMethod() const
+    {
+        return pressure_projection_method_;
+    }
+
+    void SetPressureProjectionMethod(const PressureProjectionMethod &method)
+    {
+        pressure_projection_method_ = method;
+    }
+
+    [[nodiscard]] uint32_t GetPressureJacobiIterations() const
+    {
+        return pressure_jacobi_iterations_;
+    }
+
+    void SetPressureJacobiIterations(uint32_t iterations)
+    {
+        pressure_jacobi_iterations_ = iterations;
+    }
 
     using s_ptr = std::shared_ptr<Simulation>;
 
@@ -72,10 +96,19 @@ class Simulation
     void CreateDescriptorSets();
     void SetupPipelines();
     void UpdateDescriptorSets();
+    void JacobiPressureProjection(VkCommandBuffer cmd_buffer, const SimulationConstants &constants);
+    void KernelPressureProjection(VkCommandBuffer cmd_buffer, const SimulationConstants &constants);
 
     lava::engine &app_;
 
     lava::descriptor::pool::s_ptr descriptor_pool_;
+
+    bool reset_flag_ = true;
+
+    PressureProjectionMethod pressure_projection_method_ = PressureProjectionMethod::Jacobi;
+
+    uint32_t group_count_x_, group_count_y_;
+    uint32_t pressure_jacobi_iterations_ = 32;
 
     // Velocity advection
     lava::texture::s_ptr velocity_field_texture_;
@@ -92,14 +125,20 @@ class Simulation
     lava::pipeline_layout::s_ptr divergence_pipeline_layout_;
     lava::compute_pipeline::s_ptr divergence_pipeline_;
 
-    // Pressure calculation
-    lava::texture::s_ptr pressure_field_texture_A_;
-    lava::texture::s_ptr pressure_field_texture_B_;
-    lava::descriptor::s_ptr pressure_descriptor_set_layout_;
-    VkDescriptorSet pressure_descriptor_set_A_{};
-    VkDescriptorSet pressure_descriptor_set_B_{};
-    lava::pipeline_layout::s_ptr pressure_pipeline_layout_;
-    lava::compute_pipeline::s_ptr pressure_pipeline_;
+    // Pressure calculation using Jacobi iteration
+    lava::texture::s_ptr pressure_field_jacobi_texture_A_;
+    lava::texture::s_ptr pressure_field_jacobi_texture_B_;
+    lava::descriptor::s_ptr pressure_jacobi_descriptor_set_layout_;
+    VkDescriptorSet pressure_jacobi_descriptor_set_A_{};
+    VkDescriptorSet pressure_jacobi_descriptor_set_B_{};
+    lava::pipeline_layout::s_ptr pressure_jacobi_pipeline_layout_;
+    lava::compute_pipeline::s_ptr pressure_jacobi_pipeline_;
+
+    // Pressure calculation using unified kernel
+    lava::descriptor::s_ptr pressure_kernel_descriptor_set_layout_;
+    VkDescriptorSet pressure_kernel_descriptor_set_;
+    lava::pipeline_layout::s_ptr pressure_kernel_pipeline_layout_;
+    lava::compute_pipeline::s_ptr pressure_kernel_pipeline_;
 
     // Velocity Update
     lava::texture::s_ptr color_field_texture_A_;

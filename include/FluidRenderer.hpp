@@ -34,6 +34,8 @@ class FluidRenderer
         last_frame_time_ = time;
     }
 
+    Simulation::s_ptr simulation_;
+
     using s_ptr = std::shared_ptr<FluidRenderer>;
 
     static s_ptr make(lava::engine &app)
@@ -49,8 +51,6 @@ class FluidRenderer
     void CreatePipeline();
 
     lava::engine &app_;
-
-    Simulation::s_ptr simulation_;
 
     double last_frame_time_ = 0;
 

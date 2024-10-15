@@ -1,0 +1,142 @@
+#version 450
+
+/*
+Current results appear incorrect despite following the paper's algorithm.
+Further investigation needed to identify and resolve the discrepancy.
+*/
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, r16f) uniform image2D divergence_texture;
+layout(set = 0, binding = 1, r16f) uniform image2D pressure_texture;
+
+layout(push_constant) uniform PushConstants
+{
+    float current_time;
+    float delta_time;
+    int texture_width;
+    int texture_height;
+    float fluid_density;
+    float vorticity_strength;
+    bool reset_pressure;
+} push_constants;
+
+const int kernel_size = 5;
+const int half_kernel_size = 2;
+
+const vec4 INVERSE_Itr_3_R14_Filters[5] = vec4[](
+    vec4(-0.0254, -0.0237, -0.0348, 0.0),
+    vec4(-0.124, 0.126, -0.00536, 0.0),
+    vec4(-0.556, -0.0540, 0.00558, 0.0),
+    vec4(-0.124, 0.126, -0.00536, 0.0),
+    vec4(-0.0254, -0.0237, -0.0348, 0.0)
+);
+
+ivec2 MirrorCoords(ivec2 coords, ivec2 texture_size)
+{
+    ivec2 mirrored_coords = coords;
+
+    if (mirrored_coords.x < 0)
+    {
+        mirrored_coords.x = -mirrored_coords.x;
+    } else if (mirrored_coords.x >= texture_size.x)
+    {
+        mirrored_coords.x = 2 * texture_size.x - mirrored_coords.x - 1;
+    }
+
+    if (mirrored_coords.y < 0)
+    {
+        mirrored_coords.y = -mirrored_coords.y;
+    } else if (mirrored_coords.y >= texture_size.y)
+    {
+        mirrored_coords.y = 2 * texture_size.y - mirrored_coords.y - 1;
+    }
+
+    return mirrored_coords;
+}
+
+// Multi-rank convolution using Poisson filters and mirror boundary conditions
+vec4 MirrorMarchConvolve(ivec2 coords, int axis, bool use_divergence)
+{
+    vec4 sum = vec4(0.0);
+    int center = half_kernel_size;
+
+    float base_value;
+    if (use_divergence)
+    {
+        base_value = imageLoad(divergence_texture, coords).r;
+    } else
+    {
+        base_value = imageLoad(pressure_texture, coords).r;
+    }
+    
+    sum += INVERSE_Itr_3_R14_Filters[center] * base_value;
+
+    for (int delta = 1; delta <= half_kernel_size; delta++)
+    {
+        ivec2 pos_coords = coords;
+        ivec2 neg_coords = coords;
+
+        if (axis == 0)
+        {
+            pos_coords.x += delta;
+            neg_coords.x -= delta;
+        } else if (axis == 1)
+        {
+            pos_coords.y += delta;
+            neg_coords.y -= delta;
+        }
+
+        pos_coords = MirrorCoords(pos_coords, ivec2(push_constants.texture_width, push_constants.texture_height));
+        neg_coords = MirrorCoords(neg_coords, ivec2(push_constants.texture_width, push_constants.texture_height));
+
+        // Apply the filter values for both directions for all ranks in parallel
+        vec4 pos_filter_value = INVERSE_Itr_3_R14_Filters[center + delta];
+        vec4 neg_filter_value = INVERSE_Itr_3_R14_Filters[center - delta];
+
+        if (use_divergence)
+        {
+            float pos_sample = imageLoad(divergence_texture, pos_coords).r;
+            float neg_sample = imageLoad(divergence_texture, neg_coords).r;
+            sum += pos_filter_value * pos_sample;
+            sum += neg_filter_value * neg_sample;
+        } else
+        {
+            float pos_sample = imageLoad(pressure_texture, pos_coords).r;
+            float neg_sample = imageLoad(pressure_texture, neg_coords).r;
+            sum += pos_filter_value * pos_sample;
+            sum += neg_filter_value * neg_sample;
+        }
+    }
+
+    return sum;
+}
+
+void ConvolveSingleFilter(int axis, bool use_divergence)
+{
+    ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
+    if (coords.x >= 0 && coords.x < push_constants.texture_width &&
+        coords.y >= 0 && coords.y < push_constants.texture_height)
+    {
+        vec4 result = MirrorMarchConvolve(coords, axis, use_divergence);
+        imageStore(pressure_texture, coords, vec4(result.r, 0.0, 0.0, 1.0));
+    }
+}
+
+// Solving Poisson equation with direct access to global textures using multi-rank convolution
+void SolvePoisson()
+{
+    // First pass: X-axis convolution using divergence_texture as input and pressure_texture as output
+    ConvolveSingleFilter(0, true);
+
+    memoryBarrier();
+    barrier();
+
+    // Second pass: Y-axis convolution using pressure_texture as both input and output
+    ConvolveSingleFilter(1, false);
+}
+
+void main()
+{
+    SolvePoisson();
+}
