@@ -1,21 +1,12 @@
 
 #version 450
 
+#include "PushConstants.glsl"
+
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(set = 0, binding = 0) uniform sampler2D velocity_texture;
 layout(set = 0, binding = 1, rg16f) uniform writeonly image2D advected_velocity_texture;
-
-layout(push_constant) uniform PushConstants
-{
-    float current_time;
-    float delta_time;
-    int texture_width;
-    int texture_height;
-    float fluid_density;
-    float vorticity_strength;
-    bool reset_velocity;
-} push_constants;
 
 vec2 SampleVelocity(vec2 uv)
 {
@@ -97,7 +88,7 @@ void main()
 
     vec2 advected_velocity = source_velocity + vorticity_force;
 
-    if (push_constants.reset_velocity)
+    if (push_constants.reset_flag)
     {
         advected_velocity = vec2(0.0);
     }

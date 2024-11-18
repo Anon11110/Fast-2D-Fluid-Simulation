@@ -5,21 +5,12 @@ Current results appear incorrect despite following the paper's algorithm.
 Further investigation needed to identify and resolve the discrepancy.
 */
 
+#include "PushConstants.glsl"
+
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(set = 0, binding = 0, r16f) uniform image2D divergence_texture;
 layout(set = 0, binding = 1, r16f) uniform image2D pressure_texture;
-
-layout(push_constant) uniform PushConstants
-{
-    float current_time;
-    float delta_time;
-    int texture_width;
-    int texture_height;
-    float fluid_density;
-    float vorticity_strength;
-    bool reset_pressure;
-} push_constants;
 
 const int kernel_size = 5;
 const int half_kernel_size = 2;

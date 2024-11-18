@@ -1,21 +1,12 @@
 
 #version 450
 
+#include "PushConstants.glsl"
+
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(set = 0, binding = 0, rgba8) uniform readonly image2D source_texture;
 layout(set = 0, binding = 1, rgba8) uniform writeonly image2D destination_texture;
-
-layout(push_constant) uniform PushConstants
-{
-    float current_time;
-    float delta_time;
-    int texture_width;
-    int texture_height;
-    float fluid_density;
-    float vorticity_strength;
-    bool clear_colors;
-} push_constants;
 
 void main()
 {
@@ -29,7 +20,7 @@ void main()
 
     vec4 pixel_color = imageLoad(source_texture, pixel_coords);
 
-    if (push_constants.clear_colors) 
+    if (push_constants.reset_flag) 
     {
         vec2 center = vec2(push_constants.texture_width, push_constants.texture_height) * 0.5;
         vec2 pixel_offset = vec2(pixel_coords) - center;

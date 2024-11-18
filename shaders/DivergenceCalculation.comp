@@ -1,21 +1,12 @@
 
 #version 450
 
+#include "PushConstants.glsl"
+
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(set = 0, binding = 0, rg16f) uniform readonly image2D velocity_texture;
 layout(set = 0, binding = 1, r16f) uniform writeonly image2D divergence_texture;
-
-layout(push_constant) uniform PushConstants
-{
-    float current_time;
-    float delta_time;
-    int texture_width;
-    int texture_height;
-    float fluid_density;
-    float vorticity_strength;
-    bool reset_divergence;
-} push_constants;
 
 vec2 LoadVelocity(ivec2 coords)
 {
@@ -56,7 +47,7 @@ void main()
     // Calculate divergence using incompressibility condition
     float divergence = 0.5 / grid_spacing * (velocity_right.x - velocity_left.x + velocity_up.y - velocity_down.y);
 
-    if (push_constants.reset_divergence)
+    if (push_constants.reset_flag)
     {
         divergence = 0.0;
     }

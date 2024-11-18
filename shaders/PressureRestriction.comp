@@ -1,0 +1,37 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, r16f) uniform readonly image2D fine_grid_texture;
+layout(set = 0, binding = 1, r16f) uniform writeonly image2D coarse_grid_texture;
+
+layout(push_constant) uniform MultigridPushConstants
+{
+    int fine_width;
+    int fine_height;
+    int coarse_width;
+    int coarse_height;
+} push_constants;
+
+void main()
+{
+    ivec2 coarse_coords = ivec2(gl_GlobalInvocationID.xy);
+    if (coarse_coords.x >= push_constants.coarse_width || coarse_coords.y >= push_constants.coarse_height)
+    {
+        return;
+    }
+
+    ivec2 fine_coords = coarse_coords * 2;
+
+    float center = imageLoad(fine_grid_texture, fine_coords).r;
+    float right = (fine_coords.x + 1 < push_constants.fine_width) ? 
+        imageLoad(fine_grid_texture, fine_coords + ivec2(1, 0)).r : center;
+    float up = (fine_coords.y + 1 < push_constants.fine_height) ? 
+        imageLoad(fine_grid_texture, fine_coords + ivec2(0, 1)).r : center;
+
+    float residual_value = center - 0.25 * (right + up + 
+        imageLoad(fine_grid_texture, fine_coords + ivec2(-1, 0)).r + 
+        imageLoad(fine_grid_texture, fine_coords + ivec2(0, -1)).r);
+
+    imageStore(coarse_grid_texture, coarse_coords, vec4(residual_value, 0.0, 0.0, 1.0));
+}

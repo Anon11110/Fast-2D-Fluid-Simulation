@@ -25,10 +25,19 @@ struct SimulationConstants
     bool reset_color;
 };
 
+struct MultigridConstants
+{
+    int fine_width;
+    int fine_height;
+    int coarse_width;
+    int coarse_height;
+};
+
 enum class PressureProjectionMethod
 {
     Jacobi,
-    Kernel
+    Kernel,
+    Multigrid
 };
 
 class Simulation
@@ -92,12 +101,20 @@ class Simulation
   private:
     void AddShaderMappings();
     void CreateTextures();
+    void CreateMultigridTextures(uint32_t max_levels);
     void CreateDescriptorPool();
     void CreateDescriptorSets();
     void SetupPipelines();
     void UpdateDescriptorSets();
     void JacobiPressureProjection(VkCommandBuffer cmd_buffer, const SimulationConstants &constants);
     void KernelPressureProjection(VkCommandBuffer cmd_buffer, const SimulationConstants &constants);
+
+    void PerformRelaxation(VkCommandBuffer cmd_buffer, const SimulationConstants &constants, uint32_t level);
+    void PerformRestriction(VkCommandBuffer cmd_buffer, const MultigridConstants &constants, uint32_t level);
+    void PerformProlongation(VkCommandBuffer cmd_buffer, const MultigridConstants &constants, uint32_t level);
+    MultigridConstants CalculateMultigridConstants(uint32_t level, uint32_t max_levels);
+    void VCyclePressureProjection(VkCommandBuffer cmd_buffer, const SimulationConstants &simulation_constants,
+                                  uint32_t max_levels);
 
     lava::engine &app_;
 
@@ -109,6 +126,8 @@ class Simulation
 
     uint32_t group_count_x_, group_count_y_;
     uint32_t pressure_jacobi_iterations_ = 32;
+    uint32_t multigrid_levels_ = 8;
+    uint32_t relaxation_iterations_ = 2;
 
     // Velocity advection
     lava::texture::s_ptr velocity_field_texture_;
@@ -140,6 +159,29 @@ class Simulation
     lava::pipeline_layout::s_ptr pressure_kernel_pipeline_layout_;
     lava::compute_pipeline::s_ptr pressure_kernel_pipeline_;
 
+    //// V-Cycle Multigrid
+    // Pressure relaxation
+    std::vector<lava::texture::s_ptr> pressure_multigrid_texture_A_;
+    std::vector<lava::texture::s_ptr> pressure_multigrid_texture_B_;
+    lava::descriptor::s_ptr relaxation_descriptor_set_layout_;
+    std::vector<VkDescriptorSet> relaxation_descriptor_sets_A_;
+    std::vector<VkDescriptorSet> relaxation_descriptor_sets_B_;
+    lava::pipeline_layout::s_ptr relaxation_pipeline_layout_;
+    lava::compute_pipeline::s_ptr relaxation_pipeline_;
+
+    // Pressure restriction
+    std::vector<VkDescriptorSet> restriction_descriptor_sets_;
+    lava::descriptor::s_ptr restriction_descriptor_set_layout_;
+    lava::pipeline_layout::s_ptr restriction_pipeline_layout_;
+    lava::compute_pipeline::s_ptr restriction_pipeline_;
+
+    // Pressure prolongation
+    std::vector<VkDescriptorSet> prolongation_descriptor_sets_;
+    lava::descriptor::s_ptr prolongation_descriptor_set_layout_;
+    lava::pipeline_layout::s_ptr prolongation_pipeline_layout_;
+    lava::compute_pipeline::s_ptr prolongation_pipeline_;
+    //// V-Cycle Multigrid
+
     // Velocity Update
     lava::texture::s_ptr color_field_texture_A_;
     lava::texture::s_ptr color_field_texture_B_;
@@ -159,8 +201,7 @@ class Simulation
     VkDescriptorSet color_update_descriptor_set_{};
     lava::pipeline_layout::s_ptr color_update_pipeline_layout_;
     lava::compute_pipeline::s_ptr color_update_pipeline_;
-
 };
-}
+} // namespace FluidSimulation
 
 #endif // SIMULATION_HPP
