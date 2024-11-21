@@ -105,7 +105,7 @@ int run(int argc, char *argv[])
 
             ImGui::Text("frames: %d", app.target->get_frame_count());
 
-            const char *methods[] = {"Jacobi-based", "Kernel-based", "Multigrid"};
+            const char *methods[] = {"Jacobi", "Poisson Filter", "Multigrid"};
 
             if (ImGui::Combo("Pressure Projection", &selected_method, methods, IM_ARRAYSIZE(methods)))
             {
@@ -116,7 +116,7 @@ int run(int argc, char *argv[])
             if (selected_method == 0)
             {
                 if (ImGui::SliderInt("Jacobi Iterations", &jacobi_iterations, 1,
-                                     100)) // Range: 1-100 iterations
+                                     100))
                 {
                     fluid_renderer->simulation_->SetPressureJacobiIterations(jacobi_iterations);
                 }

@@ -1,133 +1,124 @@
 #version 450
 
-/*
-Current results appear incorrect despite following the paper's algorithm.
-Further investigation needed to identify and resolve the discrepancy.
-*/
-
 #include "PushConstants.glsl"
+#include "PoissonFilter.glsl"
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(set = 0, binding = 0, r16f) uniform image2D divergence_texture;
 layout(set = 0, binding = 1, r16f) uniform image2D pressure_texture;
+layout(set = 0, binding = 2, rgba32f) uniform image2D temp_texture;
+layout(set = 0, binding = 3, rgba32f) uniform image2D temp_texture1;
 
-const int kernel_size = 5;
-const int half_kernel_size = 2;
+const int num_ranks = 8;
+const int ranks_per_texture = 4;
+const bool use_second_texture = (num_ranks > ranks_per_texture);
 
-const vec4 INVERSE_Itr_3_R14_Filters[5] = vec4[](
-    vec4(-0.0254, -0.0237, -0.0348, 0.0),
-    vec4(-0.124, 0.126, -0.00536, 0.0),
-    vec4(-0.556, -0.0540, 0.00558, 0.0),
-    vec4(-0.124, 0.126, -0.00536, 0.0),
-    vec4(-0.0254, -0.0237, -0.0348, 0.0)
-);
+const int kernel_size = INVERSE_Itr_32_Filter_Size;
+float grid_spacing = max(1.0 / push_constants.texture_width, 1.0 / push_constants.texture_height);
 
+// Function to mirror coordinates for boundary handling
 ivec2 MirrorCoords(ivec2 coords, ivec2 texture_size)
 {
     ivec2 mirrored_coords = coords;
 
     if (mirrored_coords.x < 0)
-    {
         mirrored_coords.x = -mirrored_coords.x;
-    } else if (mirrored_coords.x >= texture_size.x)
-    {
-        mirrored_coords.x = 2 * texture_size.x - mirrored_coords.x - 1;
-    }
+    else if (mirrored_coords.x >= texture_size.x)
+        mirrored_coords.x = 2 * (texture_size.x - 1) - mirrored_coords.x;
 
     if (mirrored_coords.y < 0)
-    {
         mirrored_coords.y = -mirrored_coords.y;
-    } else if (mirrored_coords.y >= texture_size.y)
-    {
-        mirrored_coords.y = 2 * texture_size.y - mirrored_coords.y - 1;
-    }
+    else if (mirrored_coords.y >= texture_size.y)
+        mirrored_coords.y = 2 * (texture_size.y - 1) - mirrored_coords.y;
 
     return mirrored_coords;
 }
 
-// Multi-rank convolution using Poisson filters and mirror boundary conditions
-vec4 MirrorMarchConvolve(ivec2 coords, int axis, bool use_divergence)
+vec4 GetMaskedVector(vec4 input_texture, int count)
 {
-    vec4 sum = vec4(0.0);
-    int center = half_kernel_size;
+    return vec4(
+        count > 0 ? input_texture.x : 0.0,
+        count > 1 ? input_texture.y : 0.0,
+        count > 2 ? input_texture.z : 0.0,
+        count > 3 ? input_texture.w : 0.0
+    );
+}
 
-    float base_value;
-    if (use_divergence)
+void VerticalPass(ivec2 coords, ivec2 texture_size)
+{
+    vec2 direction = vec2(0.0, 1.0);
+    float step_size = (kernel_size - 1) * 0.5;
+    vec4 weighted_average_14 = vec4(0.0);  // Ranks 1-4
+    vec4 weighted_average_58 = vec4(0.0);  // Ranks 5-8
+
+    for (int i = 0; i < kernel_size; i++)
     {
-        base_value = imageLoad(divergence_texture, coords).r;
-    } else
-    {
-        base_value = imageLoad(pressure_texture, coords).r;
-    }
-    
-    sum += INVERSE_Itr_3_R14_Filters[center] * base_value;
+        vec2 offset = direction * (float(i) - step_size);
+        ivec2 neighbor_coords = coords + ivec2(offset);
+        neighbor_coords = MirrorCoords(neighbor_coords, texture_size);
+        float value = imageLoad(divergence_texture, neighbor_coords).r;
 
-    for (int delta = 1; delta <= half_kernel_size; delta++)
-    {
-        ivec2 pos_coords = coords;
-        ivec2 neg_coords = coords;
+        weighted_average_14 += value * GetMaskedVector(
+            INVERSE_Itr_32_R14_Filters[i], 
+            min(num_ranks, ranks_per_texture)
+        );
 
-        if (axis == 0)
+        if (use_second_texture)
         {
-            pos_coords.x += delta;
-            neg_coords.x -= delta;
-        } else if (axis == 1)
-        {
-            pos_coords.y += delta;
-            neg_coords.y -= delta;
-        }
-
-        pos_coords = MirrorCoords(pos_coords, ivec2(push_constants.texture_width, push_constants.texture_height));
-        neg_coords = MirrorCoords(neg_coords, ivec2(push_constants.texture_width, push_constants.texture_height));
-
-        // Apply the filter values for both directions for all ranks in parallel
-        vec4 pos_filter_value = INVERSE_Itr_3_R14_Filters[center + delta];
-        vec4 neg_filter_value = INVERSE_Itr_3_R14_Filters[center - delta];
-
-        if (use_divergence)
-        {
-            float pos_sample = imageLoad(divergence_texture, pos_coords).r;
-            float neg_sample = imageLoad(divergence_texture, neg_coords).r;
-            sum += pos_filter_value * pos_sample;
-            sum += neg_filter_value * neg_sample;
-        } else
-        {
-            float pos_sample = imageLoad(pressure_texture, pos_coords).r;
-            float neg_sample = imageLoad(pressure_texture, neg_coords).r;
-            sum += pos_filter_value * pos_sample;
-            sum += neg_filter_value * neg_sample;
+            weighted_average_58 += value * GetMaskedVector(
+                INVERSE_Itr_32_R58_Filters[i], 
+                num_ranks - ranks_per_texture
+            );
         }
     }
 
-    return sum;
+    imageStore(temp_texture, coords, weighted_average_14);
+    imageStore(temp_texture1, coords, weighted_average_58);
 }
 
-void ConvolveSingleFilter(int axis, bool use_divergence)
+void HorizontalPass(ivec2 coords, ivec2 texture_size)
 {
-    ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
-    if (coords.x >= 0 && coords.x < push_constants.texture_width &&
-        coords.y >= 0 && coords.y < push_constants.texture_height)
+    vec2 direction = vec2(1.0, 0.0);
+    float step_size = (kernel_size - 1) * 0.5;
+    float final_pressure = 0.0;
+
+    for (int i = 0; i < kernel_size; i++)
     {
-        vec4 result = MirrorMarchConvolve(coords, axis, use_divergence);
-        imageStore(pressure_texture, coords, vec4(result.r, 0.0, 0.0, 1.0));
+        vec2 offset = direction * (float(i) - step_size);
+        ivec2 neighbor_coords = coords + ivec2(offset);
+        neighbor_coords = MirrorCoords(neighbor_coords, texture_size);
+        
+        vec4 intermediate_values_14 = imageLoad(temp_texture, neighbor_coords);
+        
+        final_pressure += dot(
+            intermediate_values_14,
+            -GetMaskedVector(INVERSE_Itr_32_R14_Filters[i], min(num_ranks, ranks_per_texture))
+        );
+
+        if (use_second_texture)
+        {
+            vec4 intermediate_values_58 = imageLoad(temp_texture1, neighbor_coords);
+            final_pressure += dot(
+                intermediate_values_58,
+                -GetMaskedVector(INVERSE_Itr_32_R58_Filters[i], num_ranks - ranks_per_texture)
+            );
+        }
     }
-}
 
-// Solving Poisson equation with direct access to global textures using multi-rank convolution
-void SolvePoisson()
-{
-    // First pass: X-axis convolution using divergence_texture as input and pressure_texture as output
-    ConvolveSingleFilter(0, true);
-
-    memoryBarrier();
-    barrier();
-
-    // Second pass: Y-axis convolution using pressure_texture as both input and output
-    ConvolveSingleFilter(1, false);
+    final_pressure *= (grid_spacing * grid_spacing);
+    imageStore(pressure_texture, coords, vec4(final_pressure, 0.0, 0.0, 1.0));
 }
 
 void main()
 {
-    SolvePoisson();
+    ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 texture_size = ivec2(push_constants.texture_width, push_constants.texture_height);
+
+    VerticalPass(pixel_coords, texture_size);
+
+    memoryBarrier();
+    barrier();
+
+    HorizontalPass(pixel_coords, texture_size);
 }

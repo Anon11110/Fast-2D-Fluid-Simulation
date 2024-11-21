@@ -231,6 +231,11 @@ void Simulation::CreateTextures()
     create_texture(color_field_texture_B_, VK_FORMAT_R8G8B8A8_UNORM,
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
                    window_size);
+    create_texture(temp_texture_, VK_FORMAT_R32G32B32A32_SFLOAT,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, {}, window_size);
+    create_texture(temp_texture1_, VK_FORMAT_R32G32B32A32_SFLOAT,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                   {}, window_size);
 
     CreateMultigridTextures(multigrid_levels_);
 }
@@ -305,6 +310,10 @@ void Simulation::CreateDescriptorSets()
                                                             VK_SHADER_STAGE_COMPUTE_BIT); // Divergence field
         pressure_kernel_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                             VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field
+        pressure_kernel_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                            VK_SHADER_STAGE_COMPUTE_BIT); // Temp texture
+        pressure_kernel_descriptor_set_layout_->add_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                            VK_SHADER_STAGE_COMPUTE_BIT); // Temp texture 1
 
         if (!pressure_kernel_descriptor_set_layout_->create(app_.device))
         {
@@ -594,8 +603,18 @@ void Simulation::UpdateDescriptorSets()
                                                          pressure_field_jacobi_texture_A_->get_image()->get_view(),
                                                      .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
-        write_descriptor_sets(pressure_kernel_descriptor_set_, {divergence_field_info, pressure_field_info},
-                              {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+        VkDescriptorImageInfo temp_texture_info = {.sampler = VK_NULL_HANDLE,
+                                                   .imageView = temp_texture_->get_image()->get_view(),
+                                                   .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        VkDescriptorImageInfo temp_texture1_info = {.sampler = VK_NULL_HANDLE,
+                                                   .imageView = temp_texture1_->get_image()->get_view(),
+                                                   .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        write_descriptor_sets(pressure_kernel_descriptor_set_,
+                              {divergence_field_info, pressure_field_info, temp_texture_info, temp_texture1_info},
+                              {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
     }
 
     // Velocity update
@@ -755,8 +774,16 @@ void Simulation::KernelPressureProjection(VkCommandBuffer cmd_buffer, const Simu
         cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     pressure_field_jacobi_texture_A_->get_image()->transition_layout(
-        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    temp_texture_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_GENERAL,
+                                                  VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                                                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    temp_texture1_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_GENERAL,
+                                                  VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                                                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     pressure_kernel_pipeline_->bind(cmd_buffer);
 
@@ -942,7 +969,7 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
         {
             JacobiPressureProjection(cmd_buffer, simulation_constants);
         }
-        else if (pressure_projection_method_ == PressureProjectionMethod::Kernel)
+        else if (pressure_projection_method_ == PressureProjectionMethod::Poisson_Filter)
         {
             KernelPressureProjection(cmd_buffer, simulation_constants);
         }

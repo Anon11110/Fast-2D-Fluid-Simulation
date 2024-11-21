@@ -36,7 +36,7 @@ struct MultigridConstants
 enum class PressureProjectionMethod
 {
     Jacobi,
-    Kernel,
+    Poisson_Filter,
     Multigrid
 };
 
@@ -122,7 +122,7 @@ class Simulation
 
     bool reset_flag_ = true;
 
-    PressureProjectionMethod pressure_projection_method_ = PressureProjectionMethod::Jacobi;
+    PressureProjectionMethod pressure_projection_method_ = PressureProjectionMethod::Poisson_Filter;
 
     uint32_t group_count_x_, group_count_y_;
     uint32_t pressure_jacobi_iterations_ = 32;
@@ -154,6 +154,8 @@ class Simulation
     lava::compute_pipeline::s_ptr pressure_jacobi_pipeline_;
 
     // Pressure calculation using unified kernel
+    lava::texture::s_ptr temp_texture_;
+    lava::texture::s_ptr temp_texture1_;
     lava::descriptor::s_ptr pressure_kernel_descriptor_set_layout_;
     VkDescriptorSet pressure_kernel_descriptor_set_;
     lava::pipeline_layout::s_ptr pressure_kernel_pipeline_layout_;
