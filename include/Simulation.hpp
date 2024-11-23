@@ -20,6 +20,8 @@ struct SimulationConstants
     float delta_time;
     int texture_width;
     int texture_height;
+    int divergence_width;
+    int divergence_height;
     float fluid_density;
     float vorticity_strength;
     bool reset_color;
@@ -33,12 +35,19 @@ struct MultigridConstants
     int coarse_height;
 };
 
-enum class PressureProjectionMethod
+enum class PressureProjectionMethod : uint32_t
 {
-    Jacobi,
-    Poisson_Filter,
-    Multigrid
+    None = 0,
+    Jacobi = 1 << 0,
+    Poisson_Filter = 1 << 1,
+    Multigrid = 1 << 2,
+    Multigrid_Poisson = 1 << 3
 };
+
+inline bool HasMethod(PressureProjectionMethod method, PressureProjectionMethod flag)
+{
+    return (static_cast<uint32_t>(method) & static_cast<uint32_t>(flag)) != 0;
+}
 
 class Simulation
 {
@@ -89,6 +98,11 @@ class Simulation
         pressure_jacobi_iterations_ = iterations;
     }
 
+    void Reset()
+    {
+        reset_flag_ = true;
+    }
+
     using s_ptr = std::shared_ptr<Simulation>;
 
     static s_ptr make(lava::engine &app)
@@ -110,6 +124,8 @@ class Simulation
     void KernelPressureProjection(VkCommandBuffer cmd_buffer, const SimulationConstants &constants);
 
     void PerformRelaxation(VkCommandBuffer cmd_buffer, const SimulationConstants &constants, uint32_t level);
+    void PerformPoissonFilterRelaxation(VkCommandBuffer cmd_buffer, const SimulationConstants &constants,
+                                        uint32_t level);
     void PerformRestriction(VkCommandBuffer cmd_buffer, const MultigridConstants &constants, uint32_t level);
     void PerformProlongation(VkCommandBuffer cmd_buffer, const MultigridConstants &constants, uint32_t level);
     MultigridConstants CalculateMultigridConstants(uint32_t level, uint32_t max_levels);
@@ -122,11 +138,11 @@ class Simulation
 
     bool reset_flag_ = true;
 
-    PressureProjectionMethod pressure_projection_method_ = PressureProjectionMethod::Poisson_Filter;
+    PressureProjectionMethod pressure_projection_method_ = PressureProjectionMethod::Multigrid_Poisson;
 
     uint32_t group_count_x_, group_count_y_;
     uint32_t pressure_jacobi_iterations_ = 32;
-    uint32_t multigrid_levels_ = 8;
+    uint32_t multigrid_levels_ = 5;
     uint32_t relaxation_iterations_ = 2;
 
     // Velocity advection
@@ -153,7 +169,7 @@ class Simulation
     lava::pipeline_layout::s_ptr pressure_jacobi_pipeline_layout_;
     lava::compute_pipeline::s_ptr pressure_jacobi_pipeline_;
 
-    // Pressure calculation using unified kernel
+    // Pressure calculation using Poisson filter
     lava::texture::s_ptr temp_texture_;
     lava::texture::s_ptr temp_texture1_;
     lava::descriptor::s_ptr pressure_kernel_descriptor_set_layout_;
@@ -182,7 +198,15 @@ class Simulation
     lava::descriptor::s_ptr prolongation_descriptor_set_layout_;
     lava::pipeline_layout::s_ptr prolongation_pipeline_layout_;
     lava::compute_pipeline::s_ptr prolongation_pipeline_;
-    //// V-Cycle Multigrid
+
+    //// V-Cycle Multigrid Poisson filter relaxation
+    std::vector<lava::texture::s_ptr> multigrid_temp_textures_;
+    std::vector<lava::texture::s_ptr> multigrid_temp_textures1_;
+    lava::descriptor::s_ptr poisson_relaxation_descriptor_set_layout_;
+    std::vector<VkDescriptorSet> poisson_relaxation_descriptor_sets_;
+    lava::pipeline_layout::s_ptr poisson_relaxation_pipeline_layout_;
+    lava::compute_pipeline::s_ptr poisson_relaxation_pipeline_;
+
 
     // Velocity Update
     lava::texture::s_ptr color_field_texture_A_;

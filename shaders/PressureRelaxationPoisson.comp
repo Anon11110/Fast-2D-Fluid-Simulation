@@ -14,8 +14,8 @@ const int num_ranks = 4;
 const int ranks_per_texture = 4;
 const bool use_second_texture = (num_ranks > ranks_per_texture);
 
-const int kernel_size = INVERSE_Itr_32_Filter_Size;
-float grid_spacing = max(1.0 / push_constants.texture_width, 1.0 / push_constants.texture_height);
+const int kernel_size = INVERSE_Itr_10_Filter_Size;
+float grid_spacing = max(1.0 / push_constants.divergence_width, 1.0 / push_constants.divergence_height);
 
 // Function to mirror coordinates for boundary handling
 ivec2 MirrorCoords(ivec2 coords, ivec2 texture_size)
@@ -45,7 +45,7 @@ vec4 GetMaskedVector(vec4 input_texture, int count)
     );
 }
 
-void VerticalPass(ivec2 coords, ivec2 texture_size)
+void VerticalPass(ivec2 coords, ivec2 scaled_coords, ivec2 divergence_size)
 {
     vec2 direction = vec2(0.0, 1.0);
     float step_size = (kernel_size - 1) * 0.5;
@@ -55,19 +55,20 @@ void VerticalPass(ivec2 coords, ivec2 texture_size)
     for (int i = 0; i < kernel_size; i++)
     {
         vec2 offset = direction * (float(i) - step_size);
-        ivec2 neighbor_coords = coords + ivec2(offset);
-        neighbor_coords = MirrorCoords(neighbor_coords, texture_size);
+
+        ivec2 neighbor_coords = scaled_coords + ivec2(offset);
+        neighbor_coords = MirrorCoords(neighbor_coords, divergence_size);
         float value = imageLoad(divergence_texture, neighbor_coords).r;
 
         weighted_average_14 += value * GetMaskedVector(
-            INVERSE_Itr_32_R14_Filters[i], 
+            INVERSE_Itr_10_R14_Filters[i], 
             min(num_ranks, ranks_per_texture)
         );
 
         if (use_second_texture)
         {
             weighted_average_58 += value * GetMaskedVector(
-                INVERSE_Itr_32_R58_Filters[i], 
+                INVERSE_Itr_10_R58_Filters[i], 
                 num_ranks - ranks_per_texture
             );
         }
@@ -77,7 +78,7 @@ void VerticalPass(ivec2 coords, ivec2 texture_size)
     imageStore(temp_texture1, coords, weighted_average_58);
 }
 
-void HorizontalPass(ivec2 coords, ivec2 texture_size)
+void HorizontalPass(ivec2 coords, ivec2 pressure_size)
 {
     vec2 direction = vec2(1.0, 0.0);
     float step_size = (kernel_size - 1) * 0.5;
@@ -87,13 +88,13 @@ void HorizontalPass(ivec2 coords, ivec2 texture_size)
     {
         vec2 offset = direction * (float(i) - step_size);
         ivec2 neighbor_coords = coords + ivec2(offset);
-        neighbor_coords = MirrorCoords(neighbor_coords, texture_size);
+        neighbor_coords = MirrorCoords(neighbor_coords, pressure_size);
         
         vec4 intermediate_values_14 = imageLoad(temp_texture, neighbor_coords);
         
         final_pressure += dot(
             intermediate_values_14,
-            -GetMaskedVector(INVERSE_Itr_32_R14_Filters[i], min(num_ranks, ranks_per_texture))
+            -GetMaskedVector(INVERSE_Itr_10_R14_Filters[i], min(num_ranks, ranks_per_texture))
         );
 
         if (use_second_texture)
@@ -101,7 +102,7 @@ void HorizontalPass(ivec2 coords, ivec2 texture_size)
             vec4 intermediate_values_58 = imageLoad(temp_texture1, neighbor_coords);
             final_pressure += dot(
                 intermediate_values_58,
-                -GetMaskedVector(INVERSE_Itr_32_R58_Filters[i], num_ranks - ranks_per_texture)
+                -GetMaskedVector(INVERSE_Itr_10_R58_Filters[i], num_ranks - ranks_per_texture)
             );
         }
     }
@@ -113,12 +114,21 @@ void HorizontalPass(ivec2 coords, ivec2 texture_size)
 void main()
 {
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 texture_size = ivec2(push_constants.texture_width, push_constants.texture_height);
+    if (pixel_coords.x >= push_constants.texture_width || pixel_coords.y >= push_constants.texture_height)
+    {
+        return;
+    }
 
-    VerticalPass(pixel_coords, texture_size);
+    ivec2 divergence_size = ivec2(push_constants.divergence_width, push_constants.divergence_height);
+    ivec2 pressure_size = ivec2(push_constants.texture_width, push_constants.texture_height);
+
+    ivec2 scaled_coords = pixel_coords * divergence_size / pressure_size;
+    scaled_coords = clamp(scaled_coords, ivec2(0), divergence_size - ivec2(1));
+
+    VerticalPass(pixel_coords, scaled_coords, divergence_size);
 
     memoryBarrier();
     barrier();
 
-    HorizontalPass(pixel_coords, texture_size);
+    HorizontalPass(pixel_coords, pressure_size);
 }

@@ -105,12 +105,47 @@ int run(int argc, char *argv[])
 
             ImGui::Text("frames: %d", app.target->get_frame_count());
 
-            const char *methods[] = {"Jacobi", "Poisson Filter", "Multigrid"};
+            FluidSimulation::PressureProjectionMethod current_method = fluid_renderer->simulation_->GetPressureProjectionMethod();
+            const char *methods[] = {"Jacobi", "Poisson Filter", "Multigrid", "Multigrid Poisson"};
+
+            int selected_method = 0;
+            if (current_method == FluidSimulation::PressureProjectionMethod::Jacobi)
+            {
+                selected_method = 0;
+            }
+            else if (current_method == FluidSimulation::PressureProjectionMethod::Poisson_Filter)
+            {
+                selected_method = 1;
+            }
+            else if (current_method == FluidSimulation::PressureProjectionMethod::Multigrid)
+            {
+                selected_method = 2;
+            }
+            else if (current_method == FluidSimulation::PressureProjectionMethod::Multigrid_Poisson)
+            {
+                selected_method = 3;
+            }
+
 
             if (ImGui::Combo("Pressure Projection", &selected_method, methods, IM_ARRAYSIZE(methods)))
             {
-                fluid_renderer->simulation_->SetPressureProjectionMethod(
-                    static_cast<FluidSimulation::PressureProjectionMethod>(selected_method));
+                FluidSimulation::PressureProjectionMethod new_method;
+                switch (selected_method)
+                {
+                case 0:
+                    new_method = FluidSimulation::PressureProjectionMethod::Jacobi;
+                    break;
+                case 1:
+                    new_method = FluidSimulation::PressureProjectionMethod::Poisson_Filter;
+                    break;
+                case 2:
+                    new_method = FluidSimulation::PressureProjectionMethod::Multigrid;
+                    break;
+                case 3:
+                    new_method = FluidSimulation::PressureProjectionMethod::Multigrid_Poisson;
+                    break;
+                }
+                fluid_renderer->simulation_->SetPressureProjectionMethod(new_method);
             }
 
             if (selected_method == 0)
@@ -119,6 +154,16 @@ int run(int argc, char *argv[])
                                      100))
                 {
                     fluid_renderer->simulation_->SetPressureJacobiIterations(jacobi_iterations);
+                }
+            }
+
+            static bool reset_simulation = false;
+            if (ImGui::Checkbox("Reset Simulation", &reset_simulation))
+            {
+                if (reset_simulation)
+                {
+                    fluid_renderer->simulation_->Reset();
+                    reset_simulation = false;
                 }
             }
 

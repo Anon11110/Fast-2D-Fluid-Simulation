@@ -4,6 +4,8 @@ layout(push_constant) uniform SimulationPushConstants
     float delta_time;
     int texture_width;
     int texture_height;
+    int divergence_width;
+    int divergence_height;
     float fluid_density;
     float vorticity_strength;
     bool reset_flag;

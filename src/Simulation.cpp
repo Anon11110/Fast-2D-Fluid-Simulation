@@ -115,6 +115,30 @@ Simulation::~Simulation()
     if (relaxation_pipeline_)
         relaxation_pipeline_->destroy();
 
+    // Poisson relaxation
+    for (auto &texture : multigrid_temp_textures_)
+    {
+        if (texture)
+            texture->destroy();
+    }
+    multigrid_temp_textures_.clear();
+
+    for (auto &texture : multigrid_temp_textures1_)
+    {
+        if (texture)
+            texture->destroy();
+    }
+    multigrid_temp_textures1_.clear();
+
+    if (poisson_relaxation_descriptor_set_layout_)
+        poisson_relaxation_descriptor_set_layout_->destroy();
+    poisson_relaxation_descriptor_sets_.clear();
+
+    if (poisson_relaxation_pipeline_layout_)
+        poisson_relaxation_pipeline_layout_->destroy();
+    if (poisson_relaxation_pipeline_)
+        poisson_relaxation_pipeline_->destroy();
+
     // Pressure restriction
     if (restriction_descriptor_set_layout_)
         restriction_descriptor_set_layout_->destroy();
@@ -158,6 +182,8 @@ void Simulation::AddShaderMappings()
         {"PressureRestriction.comp", "../shaders/PressureRestriction.comp"},
 
         {"PressureProlongation.comp", "../shaders/PressureProlongation.comp"},
+
+        {"PressureRelaxationPoisson.comp", "../shaders/PressureRelaxationPoisson.comp"},
     };
 
     for (auto &&[name, file] : file_mappings)
@@ -170,31 +196,54 @@ void Simulation::CreateMultigridTextures(uint32_t max_levels)
 {
     pressure_multigrid_texture_A_.resize(max_levels);
     pressure_multigrid_texture_B_.resize(max_levels);
+    multigrid_temp_textures_.resize(max_levels);
+    multigrid_temp_textures1_.resize(max_levels);
 
     pressure_multigrid_texture_A_[0] = pressure_field_jacobi_texture_A_;
     pressure_multigrid_texture_B_[0] = pressure_field_jacobi_texture_B_;
 
-    for (uint32_t level = 1; level < max_levels; level++)
+    for (uint32_t level = 0; level < max_levels; level++)
     {
         glm::uvec2 texture_size{std::max(1u, app_.target->get_size().x / (1 << level)),
                                 std::max(1u, app_.target->get_size().y / (1 << level))};
 
-        pressure_multigrid_texture_A_[level] = lava::texture::make();
-        if (!pressure_multigrid_texture_A_[level]->create(
-                app_.device, texture_size, VK_FORMAT_R16_SFLOAT, {}, lava::texture_type::tex_2d,
-                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+        if (level > 0)
         {
-            lava::logger()->error("Failed to create pressure multigrid texture A for level {}", level);
-            throw std::runtime_error("Failed to create pressure multigrid texture A.");
+            pressure_multigrid_texture_A_[level] = lava::texture::make();
+            if (!pressure_multigrid_texture_A_[level]->create(
+                    app_.device, texture_size, VK_FORMAT_R16_SFLOAT, {}, lava::texture_type::tex_2d,
+                    VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+            {
+                lava::logger()->error("Failed to create pressure multigrid texture A for level {}", level);
+                throw std::runtime_error("Failed to create pressure multigrid texture A.");
+            }
+
+            pressure_multigrid_texture_B_[level] = lava::texture::make();
+            if (!pressure_multigrid_texture_B_[level]->create(
+                    app_.device, texture_size, VK_FORMAT_R16_SFLOAT, {}, lava::texture_type::tex_2d,
+                    VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+            {
+                lava::logger()->error("Failed to create pressure multigrid texture B for level {}", level);
+                throw std::runtime_error("Failed to create pressure multigrid texture B.");
+            }
+        }
+        
+        multigrid_temp_textures_[level] = lava::texture::make();
+        if (!multigrid_temp_textures_[level]->create(app_.device, texture_size, VK_FORMAT_R32G32B32A32_SFLOAT, {},
+                                                     lava::texture_type::tex_2d, {},
+                                                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+        {
+            lava::logger()->error("Failed to create multigrid temp textures for level {}", level);
+            throw std::runtime_error("Failed to create multigrid temp textures.");
         }
 
-        pressure_multigrid_texture_B_[level] = lava::texture::make();
-        if (!pressure_multigrid_texture_B_[level]->create(
-                app_.device, texture_size, VK_FORMAT_R16_SFLOAT, {}, lava::texture_type::tex_2d,
-                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+        multigrid_temp_textures1_[level] = lava::texture::make();
+        if (!multigrid_temp_textures1_[level]->create(app_.device, texture_size, VK_FORMAT_R32G32B32A32_SFLOAT, {},
+                                                     lava::texture_type::tex_2d, {},
+                                                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
         {
-            lava::logger()->error("Failed to create pressure multigrid texture B for level {}", level);
-            throw std::runtime_error("Failed to create pressure multigrid texture B.");
+            lava::logger()->error("Failed to create multigrid temp textures 1 for level {}", level);
+            throw std::runtime_error("Failed to create multigrid temp textures 1.");
         }
     }
 }
@@ -232,9 +281,9 @@ void Simulation::CreateTextures()
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
                    window_size);
     create_texture(temp_texture_, VK_FORMAT_R32G32B32A32_SFLOAT,
-                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, {}, window_size);
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, {}, window_size);
     create_texture(temp_texture1_, VK_FORMAT_R32G32B32A32_SFLOAT,
-                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                    {}, window_size);
 
     CreateMultigridTextures(multigrid_levels_);
@@ -449,6 +498,32 @@ void Simulation::CreateDescriptorSets()
                 prolongation_descriptor_set_layout_->allocate(descriptor_pool_->get());
         }
     }
+
+    // Pressure Relaxation using Poisson Filter
+    {
+        poisson_relaxation_descriptor_set_layout_ = lava::descriptor::make();
+
+        poisson_relaxation_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                                VK_SHADER_STAGE_COMPUTE_BIT); // Divergence field
+        poisson_relaxation_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                            VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field
+        poisson_relaxation_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                            VK_SHADER_STAGE_COMPUTE_BIT); // Temp texture
+        poisson_relaxation_descriptor_set_layout_->add_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                            VK_SHADER_STAGE_COMPUTE_BIT); // Temp texture 1
+
+        if (!poisson_relaxation_descriptor_set_layout_->create(app_.device))
+        {
+            throw std::runtime_error("Failed to create poisson relaxation descriptor set layout.");
+        }
+
+        poisson_relaxation_descriptor_sets_.resize(multigrid_levels_);
+        for (uint32_t level = 0; level < multigrid_levels_; level++)
+        {
+            poisson_relaxation_descriptor_sets_[level] =
+                poisson_relaxation_descriptor_set_layout_->allocate(descriptor_pool_->get());
+        }
+    }
 }
 
 void Simulation::SetupPipelines()
@@ -520,6 +595,10 @@ void Simulation::SetupPipelines()
 
     create_pipeline(prolongation_pipeline_, "PressureProlongation.comp", prolongation_descriptor_set_layout_,
                     VK_SHADER_STAGE_COMPUTE_BIT, prolongation_pipeline_layout_, sizeof(MultigridConstants));
+
+    create_pipeline(poisson_relaxation_pipeline_, "PressureRelaxationPoisson.comp",
+                    poisson_relaxation_descriptor_set_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
+                    poisson_relaxation_pipeline_layout_, sizeof(SimulationConstants));
 }
 
 void Simulation::UpdateDescriptorSets()
@@ -728,6 +807,37 @@ void Simulation::UpdateDescriptorSets()
                                   {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
         }
     }
+
+    // Pressure Relaxation using Poisson Filter
+    {
+        for (uint32_t level = 0; level < multigrid_levels_; level++)
+        {
+            VkDescriptorImageInfo divergence_field_info = {.sampler = VK_NULL_HANDLE,
+                                                           .imageView =
+                                                               divergence_field_texture_->get_image()->get_view(),
+                                                           .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+            VkDescriptorImageInfo pressure_field_info = {
+                .sampler = VK_NULL_HANDLE,
+                .imageView = pressure_multigrid_texture_A_[level]->get_image()->get_view(),
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+            VkDescriptorImageInfo temp_texture_info = {.sampler = VK_NULL_HANDLE,
+                                                       .imageView =
+                                                           multigrid_temp_textures_[level]->get_image()->get_view(),
+                                                       .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+            VkDescriptorImageInfo temp_texture1_info = {.sampler = VK_NULL_HANDLE,
+                                                       .imageView =
+                                                           multigrid_temp_textures1_[level]->get_image()->get_view(),
+                                                       .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+            write_descriptor_sets(poisson_relaxation_descriptor_sets_[level],
+                                  {divergence_field_info, pressure_field_info, temp_texture_info, temp_texture1_info},
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+        }
+    }
 }
 
 void Simulation::JacobiPressureProjection(VkCommandBuffer cmd_buffer, const SimulationConstants &constants)
@@ -774,7 +884,7 @@ void Simulation::KernelPressureProjection(VkCommandBuffer cmd_buffer, const Simu
         cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     pressure_field_jacobi_texture_A_->get_image()->transition_layout(
-        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT,
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     temp_texture_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_GENERAL,
@@ -832,6 +942,34 @@ void Simulation::PerformRelaxation(VkCommandBuffer cmd_buffer, const SimulationC
     }
 }
 
+void Simulation::PerformPoissonFilterRelaxation(VkCommandBuffer cmd_buffer, const SimulationConstants &constants, uint32_t level)
+{
+    divergence_field_texture_->get_image()->transition_layout(
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    pressure_multigrid_texture_A_[level]->get_image()->transition_layout(
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    multigrid_temp_textures_[level]->get_image()->transition_layout(
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    multigrid_temp_textures1_[level]->get_image()->transition_layout(
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    poisson_relaxation_pipeline_->bind(cmd_buffer);
+
+    vkCmdPushConstants(cmd_buffer, poisson_relaxation_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       sizeof(SimulationConstants), &constants);
+
+    vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            poisson_relaxation_pipeline_->get_layout()->get(), 0, 1,
+                            &poisson_relaxation_descriptor_sets_[level], 0, nullptr);
+
+    vkCmdDispatch(cmd_buffer, constants.texture_width / 16 + 1, constants.texture_height / 16 + 1, 1);
+}
+
 void Simulation::PerformRestriction(VkCommandBuffer cmd_buffer, const MultigridConstants &constants, uint32_t level)
 {
     pressure_multigrid_texture_A_[level]->get_image()->transition_layout(
@@ -885,14 +1023,34 @@ void Simulation::VCyclePressureProjection(VkCommandBuffer cmd_buffer, const Simu
                                           uint32_t max_levels)
 {
     // Initial relaxation for the finest grid
-    PerformRelaxation(cmd_buffer, simulation_constants, 0);
+    if (HasMethod(pressure_projection_method_, PressureProjectionMethod::Multigrid_Poisson))
+    {
+        PerformPoissonFilterRelaxation(cmd_buffer, simulation_constants, 0);
+    }
+    else if (HasMethod(pressure_projection_method_, PressureProjectionMethod::Multigrid))
+    {
+        PerformRelaxation(cmd_buffer, simulation_constants, 0);
+    }
+
+    SimulationConstants temp_constants = simulation_constants;
 
     // Restrict residual to coarser grids
     for (uint32_t level = 0; level < max_levels - 1; level++)
     {
         MultigridConstants constants = CalculateMultigridConstants(level, max_levels);
         PerformRestriction(cmd_buffer, constants, level);
-        PerformRelaxation(cmd_buffer, simulation_constants, level + 1);
+
+        temp_constants.texture_width = pressure_multigrid_texture_A_[level + 1]->get_image()->get_size().x;
+        temp_constants.texture_height = pressure_multigrid_texture_A_[level + 1]->get_image()->get_size().y;
+
+        if (HasMethod(pressure_projection_method_, PressureProjectionMethod::Multigrid_Poisson))
+        {
+            PerformPoissonFilterRelaxation(cmd_buffer, temp_constants, level + 1);
+        }
+        else if (HasMethod(pressure_projection_method_, PressureProjectionMethod::Multigrid))
+        {
+            PerformRelaxation(cmd_buffer, temp_constants, level + 1);
+        }
     }
 
     // Prolong correction back to finer grids
@@ -900,7 +1058,19 @@ void Simulation::VCyclePressureProjection(VkCommandBuffer cmd_buffer, const Simu
     {
         MultigridConstants constants = CalculateMultigridConstants(level, max_levels);
         PerformProlongation(cmd_buffer, constants, level);
-        PerformRelaxation(cmd_buffer, simulation_constants, level);
+
+        temp_constants.texture_width = pressure_multigrid_texture_A_[level]->get_image()->get_size().x;
+        temp_constants.texture_height = pressure_multigrid_texture_A_[level]->get_image()->get_size().y;
+
+        if (HasMethod(pressure_projection_method_, PressureProjectionMethod::Multigrid_Poisson))
+        {
+            PerformPoissonFilterRelaxation(cmd_buffer, temp_constants, level);
+        }
+        else if (HasMethod(pressure_projection_method_, PressureProjectionMethod::Multigrid))
+        {
+            PerformRelaxation(cmd_buffer, temp_constants, level);
+        }
+        
     }
 }
 
@@ -914,6 +1084,8 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
     simulation_constants.delta_time = delta_time;
     simulation_constants.texture_width = static_cast<int>(window_size.x);
     simulation_constants.texture_height = static_cast<int>(window_size.y);
+    simulation_constants.divergence_width = static_cast<int>(window_size.x);
+    simulation_constants.divergence_height = static_cast<int>(window_size.y);
     simulation_constants.fluid_density = 0.5f;
     simulation_constants.vorticity_strength = 0.5f;
     simulation_constants.reset_color = reset_flag_;
@@ -973,7 +1145,8 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
         {
             KernelPressureProjection(cmd_buffer, simulation_constants);
         }
-        else if (pressure_projection_method_ == PressureProjectionMethod::Multigrid)
+        else if (pressure_projection_method_ == PressureProjectionMethod::Multigrid ||
+                 pressure_projection_method_ == PressureProjectionMethod::Multigrid_Poisson)
         {
             VCyclePressureProjection(cmd_buffer, simulation_constants, multigrid_levels_);
         }

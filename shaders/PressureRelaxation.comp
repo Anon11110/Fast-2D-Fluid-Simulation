@@ -30,7 +30,13 @@ void main()
         return;
     }
 
-    float divergence = imageLoad(divergence_texture, pixel_coords).r;
+    ivec2 divergence_size = ivec2(push_constants.divergence_width, push_constants.divergence_height);
+    ivec2 pressure_size = ivec2(push_constants.texture_width, push_constants.texture_height);
+
+    ivec2 scaled_coords = pixel_coords * divergence_size / pressure_size;
+    scaled_coords = clamp(scaled_coords, ivec2(0), divergence_size - ivec2(1));
+
+    float divergence = imageLoad(divergence_texture, scaled_coords).r;
 
     float pressure = LoadPressure(pixel_coords);
     float pressure_right = LoadPressure(pixel_coords + ivec2(1, 0));
