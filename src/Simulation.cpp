@@ -7,8 +7,10 @@ Simulation::Simulation(lava::engine &app) : app_(app)
     const lava::uv2 window_size = app_.target->get_size();
     group_count_x_ = (window_size.x - 1) / 16 + 1;
     group_count_y_ = (window_size.y - 1) / 16 + 1;
+
     AddShaderMappings();
     CreateTextures();
+    CreateBuffers();
     CreateDescriptorPool();
     CreateDescriptorSets();
     SetupPipelines();
@@ -158,6 +160,21 @@ Simulation::~Simulation()
         prolongation_pipeline_layout_->destroy();
     if (prolongation_pipeline_)
         prolongation_pipeline_->destroy();
+
+    // Residual error calculation
+    if (residual_texture_)
+        residual_texture_->destroy();
+    if (residual_descriptor_set_layout_)
+        residual_descriptor_set_layout_->destroy();
+    residual_descriptor_set_map_.clear();
+
+    if (residual_pipeline_layout_)
+        residual_pipeline_layout_->destroy();
+    if (residual_pipeline_)
+        residual_pipeline_->destroy();
+
+    if (staging_buffer_)
+        staging_buffer_->destroy();
 }
 
 void Simulation::AddShaderMappings()
@@ -184,7 +201,10 @@ void Simulation::AddShaderMappings()
         {"PressureProlongation.comp", "../shaders/PressureProlongation.comp"},
 
         {"PressureRelaxationPoisson.comp", "../shaders/PressureRelaxationPoisson.comp"},
-    };
+
+        {"ResidualErrorCalculation.comp", "../shaders/ResidualErrorCalculation.comp"},
+
+        {"ResidualReduction.comp", "../shaders/ResidualReduction.comp"}};
 
     for (auto &&[name, file] : file_mappings)
     {
@@ -227,7 +247,7 @@ void Simulation::CreateMultigridTextures(uint32_t max_levels)
                 throw std::runtime_error("Failed to create pressure multigrid texture B.");
             }
         }
-        
+
         multigrid_temp_textures_[level] = lava::texture::make();
         if (!multigrid_temp_textures_[level]->create(app_.device, texture_size, VK_FORMAT_R32G32B32A32_SFLOAT, {},
                                                      lava::texture_type::tex_2d, {},
@@ -239,8 +259,8 @@ void Simulation::CreateMultigridTextures(uint32_t max_levels)
 
         multigrid_temp_textures1_[level] = lava::texture::make();
         if (!multigrid_temp_textures1_[level]->create(app_.device, texture_size, VK_FORMAT_R32G32B32A32_SFLOAT, {},
-                                                     lava::texture_type::tex_2d, {},
-                                                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+                                                      lava::texture_type::tex_2d, {},
+                                                      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
         {
             lava::logger()->error("Failed to create multigrid temp textures 1 for level {}", level);
             throw std::runtime_error("Failed to create multigrid temp textures 1.");
@@ -283,10 +303,24 @@ void Simulation::CreateTextures()
     create_texture(temp_texture_, VK_FORMAT_R32G32B32A32_SFLOAT,
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, {}, window_size);
     create_texture(temp_texture1_, VK_FORMAT_R32G32B32A32_SFLOAT,
-                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                   {}, window_size);
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, {}, window_size);
+    create_texture(residual_texture_, VK_FORMAT_R32_SFLOAT,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, {},
+                   window_size);
 
     CreateMultigridTextures(multigrid_levels_);
+}
+
+void Simulation::CreateBuffers()
+{
+    const lava::uv2 texture_size = app_.target->get_size();
+
+    staging_buffer_ = lava::buffer::make();
+    if (!staging_buffer_->create_mapped(app_.device, nullptr, texture_size.x * texture_size.y * sizeof(float),
+                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_CPU_ONLY))
+    {
+        throw std::runtime_error("Failed to create staging buffer");
+    }
 }
 
 void Simulation::CreateDescriptorPool()
@@ -504,13 +538,13 @@ void Simulation::CreateDescriptorSets()
         poisson_relaxation_descriptor_set_layout_ = lava::descriptor::make();
 
         poisson_relaxation_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                                                VK_SHADER_STAGE_COMPUTE_BIT); // Divergence field
+                                                               VK_SHADER_STAGE_COMPUTE_BIT); // Divergence field
         poisson_relaxation_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                                            VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field
+                                                               VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field
         poisson_relaxation_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                                            VK_SHADER_STAGE_COMPUTE_BIT); // Temp texture
+                                                               VK_SHADER_STAGE_COMPUTE_BIT); // Temp texture
         poisson_relaxation_descriptor_set_layout_->add_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                                            VK_SHADER_STAGE_COMPUTE_BIT); // Temp texture 1
+                                                               VK_SHADER_STAGE_COMPUTE_BIT); // Temp texture 1
 
         if (!poisson_relaxation_descriptor_set_layout_->create(app_.device))
         {
@@ -523,6 +557,31 @@ void Simulation::CreateDescriptorSets()
             poisson_relaxation_descriptor_sets_[level] =
                 poisson_relaxation_descriptor_set_layout_->allocate(descriptor_pool_->get());
         }
+    }
+
+    // Residual error calculation
+    {
+        residual_descriptor_set_layout_ = lava::descriptor::make();
+        residual_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                     VK_SHADER_STAGE_COMPUTE_BIT); // Divergence field
+        residual_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                     VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field
+        residual_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                     VK_SHADER_STAGE_COMPUTE_BIT); // Residual error
+
+        if (!residual_descriptor_set_layout_->create(app_.device))
+        {
+            throw std::runtime_error("Failed to create residual error calculation descriptor set layout.");
+        }
+
+        residual_descriptor_set_map_[PressureProjectionMethod::Jacobi] =
+            residual_descriptor_set_layout_->allocate(descriptor_pool_->get());
+        residual_descriptor_set_map_[PressureProjectionMethod::Poisson_Filter] =
+            residual_descriptor_set_layout_->allocate(descriptor_pool_->get());
+        residual_descriptor_set_map_[PressureProjectionMethod::Multigrid] =
+            residual_descriptor_set_layout_->allocate(descriptor_pool_->get());
+        residual_descriptor_set_map_[PressureProjectionMethod::Multigrid_Poisson] =
+            residual_descriptor_set_layout_->allocate(descriptor_pool_->get());
     }
 }
 
@@ -599,6 +658,9 @@ void Simulation::SetupPipelines()
     create_pipeline(poisson_relaxation_pipeline_, "PressureRelaxationPoisson.comp",
                     poisson_relaxation_descriptor_set_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
                     poisson_relaxation_pipeline_layout_, sizeof(SimulationConstants));
+
+    create_pipeline(residual_pipeline_, "ResidualErrorCalculation.comp", residual_descriptor_set_layout_,
+                    VK_SHADER_STAGE_COMPUTE_BIT, residual_pipeline_layout_, sizeof(SimulationConstants));
 }
 
 void Simulation::UpdateDescriptorSets()
@@ -687,8 +749,8 @@ void Simulation::UpdateDescriptorSets()
                                                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
         VkDescriptorImageInfo temp_texture1_info = {.sampler = VK_NULL_HANDLE,
-                                                   .imageView = temp_texture1_->get_image()->get_view(),
-                                                   .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+                                                    .imageView = temp_texture1_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
         write_descriptor_sets(pressure_kernel_descriptor_set_,
                               {divergence_field_info, pressure_field_info, temp_texture_info, temp_texture1_info},
@@ -828,15 +890,54 @@ void Simulation::UpdateDescriptorSets()
                                                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
             VkDescriptorImageInfo temp_texture1_info = {.sampler = VK_NULL_HANDLE,
-                                                       .imageView =
-                                                           multigrid_temp_textures1_[level]->get_image()->get_view(),
-                                                       .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+                                                        .imageView =
+                                                            multigrid_temp_textures1_[level]->get_image()->get_view(),
+                                                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
             write_descriptor_sets(poisson_relaxation_descriptor_sets_[level],
                                   {divergence_field_info, pressure_field_info, temp_texture_info, temp_texture1_info},
                                   {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                    VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
         }
+    }
+
+    // Residual error calculation
+    {
+        VkDescriptorImageInfo divergence_field_info = {.sampler = VK_NULL_HANDLE,
+                                                       .imageView = divergence_field_texture_->get_image()->get_view(),
+                                                       .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        VkDescriptorImageInfo pressure_field_info = {.sampler = VK_NULL_HANDLE,
+                                                     .imageView =
+                                                         pressure_field_jacobi_texture_A_->get_image()->get_view(),
+                                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        VkDescriptorImageInfo residual_error_info = {.sampler = VK_NULL_HANDLE,
+                                                     .imageView = residual_texture_->get_image()->get_view(),
+                                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        write_descriptor_sets(
+            residual_descriptor_set_map_[PressureProjectionMethod::Jacobi],
+            {divergence_field_info, pressure_field_info, residual_error_info},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+
+        write_descriptor_sets(
+            residual_descriptor_set_map_[PressureProjectionMethod::Poisson_Filter],
+            {divergence_field_info, pressure_field_info, residual_error_info},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+
+        // Output pressure for multigrid solver is stored in texture 0
+        pressure_field_info.imageView = pressure_multigrid_texture_A_[0]->get_image()->get_view();
+
+        write_descriptor_sets(
+            residual_descriptor_set_map_[PressureProjectionMethod::Multigrid],
+            {divergence_field_info, pressure_field_info, residual_error_info},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+
+        write_descriptor_sets(
+            residual_descriptor_set_map_[PressureProjectionMethod::Multigrid_Poisson],
+            {divergence_field_info, pressure_field_info, residual_error_info},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
     }
 }
 
@@ -884,16 +985,15 @@ void Simulation::KernelPressureProjection(VkCommandBuffer cmd_buffer, const Simu
         cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     pressure_field_jacobi_texture_A_->get_image()->transition_layout(
-        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     temp_texture_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_GENERAL,
                                                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
                                                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     temp_texture1_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_GENERAL,
-                                                  VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-                                                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+                                                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                                                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     pressure_kernel_pipeline_->bind(cmd_buffer);
 
@@ -942,7 +1042,8 @@ void Simulation::PerformRelaxation(VkCommandBuffer cmd_buffer, const SimulationC
     }
 }
 
-void Simulation::PerformPoissonFilterRelaxation(VkCommandBuffer cmd_buffer, const SimulationConstants &constants, uint32_t level)
+void Simulation::PerformPoissonFilterRelaxation(VkCommandBuffer cmd_buffer, const SimulationConstants &constants,
+                                                uint32_t level)
 {
     divergence_field_texture_->get_image()->transition_layout(
         cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -1070,8 +1171,68 @@ void Simulation::VCyclePressureProjection(VkCommandBuffer cmd_buffer, const Simu
         {
             PerformRelaxation(cmd_buffer, temp_constants, level);
         }
-        
     }
+}
+
+void Simulation::CalculateResidualError(VkCommandBuffer cmd_buffer, const SimulationConstants &constants)
+{
+    divergence_field_texture_->get_image()->transition_layout(
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    switch (pressure_projection_method_)
+    {
+    case FluidSimulation::PressureProjectionMethod::Jacobi:
+    case FluidSimulation::PressureProjectionMethod::Poisson_Filter:
+        pressure_field_jacobi_texture_A_->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        break;
+
+    case FluidSimulation::PressureProjectionMethod::Multigrid:
+    case FluidSimulation::PressureProjectionMethod::Multigrid_Poisson:
+        pressure_multigrid_texture_A_[0]->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        break;
+
+    default:
+        pressure_field_jacobi_texture_A_->get_image()->transition_layout(
+            cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        break;
+    }
+
+    residual_texture_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_GENERAL,
+                                                      VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+                                                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    residual_pipeline_->bind(cmd_buffer);
+
+    vkCmdPushConstants(cmd_buffer, residual_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       sizeof(SimulationConstants), &constants);
+
+    vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, residual_pipeline_->get_layout()->get(), 0, 1,
+                            &residual_descriptor_set_map_[pressure_projection_method_], 0, nullptr);
+
+    vkCmdDispatch(cmd_buffer, constants.texture_width / 16 + 1, constants.texture_height / 16 + 1, 1);
+}
+
+void Simulation::CopyTextureToCPU(VkCommandBuffer cmd_buffer, lava::texture::s_ptr texture)
+{
+    auto image = texture->get_image();
+    VkDeviceSize image_size = image->get_size().x * image->get_size().y * sizeof(float);
+
+    texture->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+    VkBufferImageCopy copy_region = {};
+    copy_region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy_region.imageSubresource.mipLevel = 0;
+    copy_region.imageSubresource.baseArrayLayer = 0;
+    copy_region.imageSubresource.layerCount = 1;
+    copy_region.imageExtent = {texture->get_size().x, texture->get_size().y, 1};
+
+    vkCmdCopyImageToBuffer(cmd_buffer, texture->get_image()->get(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           staging_buffer_->get(), 1, &copy_region);
+
+    lava::logger()->info("Block copy to CPU executed.");
 }
 
 void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame_context)
@@ -1150,6 +1311,12 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
         {
             VCyclePressureProjection(cmd_buffer, simulation_constants, multigrid_levels_);
         }
+
+        if (calculate_residual_error_ && frame_count_ == PRESSURE_CONVERGENCE_CHECK_FRAME)
+        {
+            CalculateResidualError(cmd_buffer, simulation_constants);
+            CopyTextureToCPU(cmd_buffer, residual_texture_);
+        }
     }
 
     // Update velocity pass
@@ -1226,6 +1393,8 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
                                                                VK_ACCESS_SHADER_READ_BIT,
                                                                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
+
+    frame_count_++;
 }
 
 } // namespace FluidSimulation

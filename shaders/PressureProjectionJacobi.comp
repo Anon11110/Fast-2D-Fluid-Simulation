@@ -33,16 +33,15 @@ void main()
 
     float divergence = imageLoad(divergence_texture, pixel_coords).r;
 
-    float pressure = LoadPressure(pixel_coords);
-    float pressure_right = LoadPressure(pixel_coords + ivec2(2, 0));
-    float pressure_left = LoadPressure(pixel_coords + ivec2(-2, 0));
-    float pressure_up = LoadPressure(pixel_coords + ivec2(0, 2));
-    float pressure_down = LoadPressure(pixel_coords + ivec2(0, -2));
+    float pressure_right = LoadPressure(pixel_coords + ivec2(1, 0));
+    float pressure_left = LoadPressure(pixel_coords + ivec2(-1, 0));
+    float pressure_up = LoadPressure(pixel_coords + ivec2(0, 1));
+    float pressure_down = LoadPressure(pixel_coords + ivec2(0, -1));
 
     float grid_spacing = max(1.0 / push_constants.texture_width, 1.0 / push_constants.texture_height);
 
     // Update pressure using Jacobi iteration
-    pressure = 0.25 * (pressure_right + pressure_left + pressure_up + pressure_down - divergence * grid_spacing * grid_spacing);
+    float pressure = 0.25 * (pressure_right + pressure_left + pressure_up + pressure_down - divergence * grid_spacing * grid_spacing);
 
     if (push_constants.reset_flag)
     {

@@ -89,88 +89,86 @@ int run(int argc, char *argv[])
     int selected_method = static_cast<int>(fluid_renderer->simulation_->GetPressureProjectionMethod());
     int jacobi_iterations = fluid_renderer->simulation_->GetPressureJacobiIterations();
 
-    app.imgui.layers.add(
-        "info",
-        [&]()
-        {
-            ImGui::SetNextWindowPos({30, 30}, ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize({260, 135}, ImGuiCond_FirstUseEver);
+    app.imgui.layers.add("info",
+                         [&]()
+                         {
+                             ImGui::SetNextWindowPos({30, 30}, ImGuiCond_FirstUseEver);
+                             ImGui::SetNextWindowSize({260, 135}, ImGuiCond_FirstUseEver);
 
-            ImGui::Begin(app.get_name());
+                             ImGui::Begin(app.get_name());
 
-            uv2 target_size = app.target->get_size();
-            ImGui::Text("target: %d x %d", target_size.x, target_size.y);
+                             uv2 target_size = app.target->get_size();
+                             ImGui::Text("target: %d x %d", target_size.x, target_size.y);
 
-            ImGui::SameLine();
+                             ImGui::SameLine();
 
-            ImGui::Text("frames: %d", app.target->get_frame_count());
+                             ImGui::Text("swapchain count: %d", app.target->get_frame_count());
 
-            FluidSimulation::PressureProjectionMethod current_method = fluid_renderer->simulation_->GetPressureProjectionMethod();
-            const char *methods[] = {"Jacobi", "Poisson Filter", "Multigrid", "Multigrid Poisson"};
+                             FluidSimulation::PressureProjectionMethod current_method =
+                                 fluid_renderer->simulation_->GetPressureProjectionMethod();
+                             const char *methods[] = {"Jacobi", "Poisson Filter", "Multigrid", "Multigrid Poisson"};
 
-            int selected_method = 0;
-            if (current_method == FluidSimulation::PressureProjectionMethod::Jacobi)
-            {
-                selected_method = 0;
-            }
-            else if (current_method == FluidSimulation::PressureProjectionMethod::Poisson_Filter)
-            {
-                selected_method = 1;
-            }
-            else if (current_method == FluidSimulation::PressureProjectionMethod::Multigrid)
-            {
-                selected_method = 2;
-            }
-            else if (current_method == FluidSimulation::PressureProjectionMethod::Multigrid_Poisson)
-            {
-                selected_method = 3;
-            }
+                             int selected_method = 0;
+                             if (current_method == FluidSimulation::PressureProjectionMethod::Jacobi)
+                             {
+                                 selected_method = 0;
+                             }
+                             else if (current_method == FluidSimulation::PressureProjectionMethod::Poisson_Filter)
+                             {
+                                 selected_method = 1;
+                             }
+                             else if (current_method == FluidSimulation::PressureProjectionMethod::Multigrid)
+                             {
+                                 selected_method = 2;
+                             }
+                             else if (current_method == FluidSimulation::PressureProjectionMethod::Multigrid_Poisson)
+                             {
+                                 selected_method = 3;
+                             }
 
+                             if (ImGui::Combo("Pressure Projection", &selected_method, methods, IM_ARRAYSIZE(methods)))
+                             {
+                                 FluidSimulation::PressureProjectionMethod new_method;
+                                 switch (selected_method)
+                                 {
+                                 case 0:
+                                     new_method = FluidSimulation::PressureProjectionMethod::Jacobi;
+                                     break;
+                                 case 1:
+                                     new_method = FluidSimulation::PressureProjectionMethod::Poisson_Filter;
+                                     break;
+                                 case 2:
+                                     new_method = FluidSimulation::PressureProjectionMethod::Multigrid;
+                                     break;
+                                 case 3:
+                                     new_method = FluidSimulation::PressureProjectionMethod::Multigrid_Poisson;
+                                     break;
+                                 }
+                                 fluid_renderer->simulation_->SetPressureProjectionMethod(new_method);
+                             }
 
-            if (ImGui::Combo("Pressure Projection", &selected_method, methods, IM_ARRAYSIZE(methods)))
-            {
-                FluidSimulation::PressureProjectionMethod new_method;
-                switch (selected_method)
-                {
-                case 0:
-                    new_method = FluidSimulation::PressureProjectionMethod::Jacobi;
-                    break;
-                case 1:
-                    new_method = FluidSimulation::PressureProjectionMethod::Poisson_Filter;
-                    break;
-                case 2:
-                    new_method = FluidSimulation::PressureProjectionMethod::Multigrid;
-                    break;
-                case 3:
-                    new_method = FluidSimulation::PressureProjectionMethod::Multigrid_Poisson;
-                    break;
-                }
-                fluid_renderer->simulation_->SetPressureProjectionMethod(new_method);
-            }
+                             if (selected_method == 0)
+                             {
+                                 if (ImGui::SliderInt("Jacobi Iterations", &jacobi_iterations, 1, 100))
+                                 {
+                                     fluid_renderer->simulation_->SetPressureJacobiIterations(jacobi_iterations);
+                                 }
+                             }
 
-            if (selected_method == 0)
-            {
-                if (ImGui::SliderInt("Jacobi Iterations", &jacobi_iterations, 1,
-                                     100))
-                {
-                    fluid_renderer->simulation_->SetPressureJacobiIterations(jacobi_iterations);
-                }
-            }
+                             static bool reset_simulation = false;
+                             if (ImGui::Checkbox("Reset Simulation", &reset_simulation))
+                             {
+                                 if (reset_simulation)
+                                 {
+                                     fluid_renderer->simulation_->Reset();
+                                     reset_simulation = false;
+                                 }
+                             }
 
-            static bool reset_simulation = false;
-            if (ImGui::Checkbox("Reset Simulation", &reset_simulation))
-            {
-                if (reset_simulation)
-                {
-                    fluid_renderer->simulation_->Reset();
-                    reset_simulation = false;
-                }
-            }
+                             app.draw_about();
 
-            app.draw_about();
-
-            ImGui::End();
-        });
+                             ImGui::End();
+                         });
 
     app.add_run_end([&]() {});
 

@@ -54,7 +54,3 @@ void main()
 
     imageStore(divergence_texture, pixel_coords, vec4(divergence, 0.0, 0.0, 1.0));
 }
-
-
-
-

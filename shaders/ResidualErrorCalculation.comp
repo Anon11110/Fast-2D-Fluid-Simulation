@@ -1,0 +1,34 @@
+#version 450
+
+#include "PushConstants.glsl"
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, r16f) uniform readonly image2D divergence_texture;
+layout(set = 0, binding = 1, r16f) uniform readonly image2D pressure_texture;
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D residual_texture;
+
+void main()
+{
+    ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
+    if (coords.x >= push_constants.texture_width || coords.y >= push_constants.texture_height)
+    {
+        return;
+    }
+
+    float grid_spacing = max(1.0 / push_constants.texture_width, 1.0 / push_constants.texture_height);
+
+    float divergence = imageLoad(divergence_texture, coords).r;
+
+    float pressure = imageLoad(pressure_texture, coords).r;
+    float pressure_right = imageLoad(pressure_texture, coords + ivec2(1, 0)).r;
+    float pressure_left = imageLoad(pressure_texture, coords + ivec2(-1, 0)).r;
+    float pressure_up = imageLoad(pressure_texture, coords + ivec2(0, 1)).r;
+    float pressure_down = imageLoad(pressure_texture, coords + ivec2(0, -1)).r;
+
+    float laplacian = (pressure_left + pressure_right + pressure_up + pressure_down - 4.0 * pressure) / (grid_spacing * grid_spacing);
+
+    float residual = divergence - laplacian;
+
+    imageStore(residual_texture, coords, vec4(residual * residual, 0.0, 0.0, 1.0));
+}

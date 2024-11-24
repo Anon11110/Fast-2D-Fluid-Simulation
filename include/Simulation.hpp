@@ -115,6 +115,7 @@ class Simulation
   private:
     void AddShaderMappings();
     void CreateTextures();
+    void CreateBuffers();
     void CreateMultigridTextures(uint32_t max_levels);
     void CreateDescriptorPool();
     void CreateDescriptorSets();
@@ -132,18 +133,26 @@ class Simulation
     void VCyclePressureProjection(VkCommandBuffer cmd_buffer, const SimulationConstants &simulation_constants,
                                   uint32_t max_levels);
 
+    void CalculateResidualError(VkCommandBuffer cmd_buffer, const SimulationConstants &constants);
+    void CopyTextureToCPU(VkCommandBuffer cmd_buffer, lava::texture::s_ptr texture);
+
     lava::engine &app_;
 
     lava::descriptor::pool::s_ptr descriptor_pool_;
 
     bool reset_flag_ = true;
+    bool calculate_residual_error_ = false;
+    const uint32_t PRESSURE_CONVERGENCE_CHECK_FRAME = 1000;
+    uint32_t frame_count_ = 0;
+    std::vector<float> residual_host_data_;
+    lava::buffer::s_ptr staging_buffer_;
 
     PressureProjectionMethod pressure_projection_method_ = PressureProjectionMethod::Multigrid_Poisson;
 
     uint32_t group_count_x_, group_count_y_;
     uint32_t pressure_jacobi_iterations_ = 32;
     uint32_t multigrid_levels_ = 5;
-    uint32_t relaxation_iterations_ = 2;
+    uint32_t relaxation_iterations_ = 4;
 
     // Velocity advection
     lava::texture::s_ptr velocity_field_texture_;
@@ -207,7 +216,6 @@ class Simulation
     lava::pipeline_layout::s_ptr poisson_relaxation_pipeline_layout_;
     lava::compute_pipeline::s_ptr poisson_relaxation_pipeline_;
 
-
     // Velocity Update
     lava::texture::s_ptr color_field_texture_A_;
     lava::texture::s_ptr color_field_texture_B_;
@@ -227,6 +235,13 @@ class Simulation
     VkDescriptorSet color_update_descriptor_set_{};
     lava::pipeline_layout::s_ptr color_update_pipeline_layout_;
     lava::compute_pipeline::s_ptr color_update_pipeline_;
+
+    // Calculate residual error
+    lava::texture::s_ptr residual_texture_;
+    lava::descriptor::s_ptr residual_descriptor_set_layout_;
+    std::unordered_map<PressureProjectionMethod, VkDescriptorSet> residual_descriptor_set_map_;
+    lava::pipeline_layout::s_ptr residual_pipeline_layout_;
+    lava::compute_pipeline::s_ptr residual_pipeline_;
 };
 } // namespace FluidSimulation
 

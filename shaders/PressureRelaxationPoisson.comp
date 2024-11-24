@@ -14,7 +14,7 @@ const int num_ranks = 4;
 const int ranks_per_texture = 4;
 const bool use_second_texture = (num_ranks > ranks_per_texture);
 
-const int kernel_size = INVERSE_Itr_10_Filter_Size;
+const int kernel_size = INVERSE_Itr_7_Filter_Size;
 float grid_spacing = max(1.0 / push_constants.divergence_width, 1.0 / push_constants.divergence_height);
 
 // Function to mirror coordinates for boundary handling
@@ -61,14 +61,14 @@ void VerticalPass(ivec2 coords, ivec2 scaled_coords, ivec2 divergence_size)
         float value = imageLoad(divergence_texture, neighbor_coords).r;
 
         weighted_average_14 += value * GetMaskedVector(
-            INVERSE_Itr_10_R14_Filters[i], 
+            INVERSE_Itr_7_R14_Filters[i], 
             min(num_ranks, ranks_per_texture)
         );
 
         if (use_second_texture)
         {
             weighted_average_58 += value * GetMaskedVector(
-                INVERSE_Itr_10_R58_Filters[i], 
+                INVERSE_Itr_7_R58_Filters[i], 
                 num_ranks - ranks_per_texture
             );
         }
@@ -94,7 +94,7 @@ void HorizontalPass(ivec2 coords, ivec2 pressure_size)
         
         final_pressure += dot(
             intermediate_values_14,
-            -GetMaskedVector(INVERSE_Itr_10_R14_Filters[i], min(num_ranks, ranks_per_texture))
+            -GetMaskedVector(INVERSE_Itr_7_R14_Filters[i], min(num_ranks, ranks_per_texture))
         );
 
         if (use_second_texture)
@@ -102,7 +102,7 @@ void HorizontalPass(ivec2 coords, ivec2 pressure_size)
             vec4 intermediate_values_58 = imageLoad(temp_texture1, neighbor_coords);
             final_pressure += dot(
                 intermediate_values_58,
-                -GetMaskedVector(INVERSE_Itr_10_R58_Filters[i], num_ranks - ranks_per_texture)
+                -GetMaskedVector(INVERSE_Itr_7_R58_Filters[i], num_ranks - ranks_per_texture)
             );
         }
     }
