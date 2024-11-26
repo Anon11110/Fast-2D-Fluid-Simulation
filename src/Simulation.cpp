@@ -22,6 +22,16 @@ Simulation::~Simulation()
     if (descriptor_pool_)
         descriptor_pool_->destroy();
 
+    // Obstacle mask
+    if (obstacle_mask_texture_)
+        obstacle_mask_texture_->destroy();
+    if (obstacle_mask_descriptor_set_layout_)
+        obstacle_mask_descriptor_set_layout_->destroy();
+    if (obstacle_mask_pipeline_layout_)
+        obstacle_mask_pipeline_layout_->destroy();
+    if (obstacle_mask_pipeline_)
+        obstacle_mask_pipeline_->destroy();
+
     // Velocity advection
     if (velocity_field_texture_)
         velocity_field_texture_->destroy();
@@ -180,6 +190,8 @@ Simulation::~Simulation()
 void Simulation::AddShaderMappings()
 {
     const std::vector<std::pair<std::string, std::string>> file_mappings{
+        {"ObstacleMaskFilling.comp", "../shaders/ObstacleMaskFilling.comp"},
+        
         {"VelocityAdvection.comp", "../shaders/VelocityAdvection.comp"},
 
         {"DivergenceCalculation.comp", "../shaders/DivergenceCalculation.comp"},
@@ -273,39 +285,53 @@ void Simulation::CreateTextures()
     const glm::uvec2 window_size = app_.target->get_size();
 
     auto create_texture = [&](lava::texture::s_ptr &texture, VkFormat format, VkImageUsageFlags usage,
-                              VkSamplerAddressMode address_mode, glm::uvec2 size)
+                              VkSamplerAddressMode address_mode, VkFilter filter, VkSamplerMipmapMode mipmap_mode,
+                              glm::uvec2 size)
     {
         texture = lava::texture::make();
-        if (!texture->create(app_.device, size, format, {}, lava::texture_type::tex_2d, address_mode, usage))
+        if (!texture->create(app_.device, size, format, {}, lava::texture_type::tex_2d, address_mode, usage, filter, mipmap_mode))
         {
             throw std::runtime_error("Failed to create texture.");
         }
     };
 
-    create_texture(velocity_field_texture_, VK_FORMAT_R16G16_SFLOAT,
-                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
+    create_texture(obstacle_mask_texture_, VK_FORMAT_R8_UNORM,
+                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+                   VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST,
                    window_size);
-    create_texture(advected_velocity_field_texture_, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT, {},
+    create_texture(velocity_field_texture_, VK_FORMAT_R16G16_SFLOAT,
+                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                   VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, window_size);
+    create_texture(advected_velocity_field_texture_, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT,
+                   VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                   VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR,
                    window_size);
     create_texture(divergence_field_texture_, VK_FORMAT_R16_SFLOAT,
-                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, {}, window_size);
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                   VK_FILTER_LINEAR,
+                   VK_SAMPLER_MIPMAP_MODE_LINEAR, window_size);
     create_texture(pressure_field_jacobi_texture_A_, VK_FORMAT_R16_SFLOAT,
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                   window_size);
+                   VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, window_size);
     create_texture(pressure_field_jacobi_texture_B_, VK_FORMAT_R16_SFLOAT,
-                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, {}, window_size);
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                   VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, window_size);
     create_texture(color_field_texture_A_, VK_FORMAT_R8G8B8A8_UNORM,
-                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
-                   window_size);
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                   VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, window_size);
     create_texture(color_field_texture_B_, VK_FORMAT_R8G8B8A8_UNORM,
-                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
-                   window_size);
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                   VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, window_size);
     create_texture(temp_texture_, VK_FORMAT_R32G32B32A32_SFLOAT,
-                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, {}, window_size);
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_FILTER_LINEAR,
+                   VK_SAMPLER_MIPMAP_MODE_LINEAR, window_size);
     create_texture(temp_texture1_, VK_FORMAT_R32G32B32A32_SFLOAT,
-                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, {}, window_size);
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                   VK_FILTER_LINEAR,
+                   VK_SAMPLER_MIPMAP_MODE_LINEAR, window_size);
     create_texture(residual_texture_, VK_FORMAT_R32_SFLOAT,
-                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, {},
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                   VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST,
                    window_size);
 
     CreateMultigridTextures(multigrid_levels_);
@@ -332,6 +358,21 @@ void Simulation::CreateDescriptorPool()
 
 void Simulation::CreateDescriptorSets()
 {
+    // Obstacle mask filling
+    {
+        obstacle_mask_descriptor_set_layout_ = lava::descriptor::make();
+        obstacle_mask_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                          VK_SHADER_STAGE_COMPUTE_BIT); // Obstacle mask
+
+        if (!obstacle_mask_descriptor_set_layout_->create(app_.device))
+        {
+            lava::logger()->error("Failed to create advect descriptor set layout.");
+            throw std::runtime_error("Failed to create advect descriptor set layout.");
+        }
+
+        obstacle_mask_descriptor_set_ = obstacle_mask_descriptor_set_layout_->allocate(descriptor_pool_->get());
+    }
+
     // Velocity advection
     {
         advect_descriptor_set_layout_ = lava::descriptor::make();
@@ -339,6 +380,8 @@ void Simulation::CreateDescriptorSets()
                                                    VK_SHADER_STAGE_COMPUTE_BIT); // Velocity field
         advect_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                    VK_SHADER_STAGE_COMPUTE_BIT); // Advected velocity field
+        advect_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                   VK_SHADER_STAGE_COMPUTE_BIT); // Obstacle mask
 
         if (!advect_descriptor_set_layout_->create(app_.device))
         {
@@ -356,6 +399,8 @@ void Simulation::CreateDescriptorSets()
                                                        VK_SHADER_STAGE_COMPUTE_BIT); // Advected velocity field
         divergence_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                        VK_SHADER_STAGE_COMPUTE_BIT); // Divergence field
+        divergence_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                   VK_SHADER_STAGE_COMPUTE_BIT); // Obstacle mask
 
         if (!divergence_descriptor_set_layout_->create(app_.device))
         {
@@ -375,6 +420,8 @@ void Simulation::CreateDescriptorSets()
                                                             VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field A
         pressure_jacobi_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                             VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field B
+        pressure_jacobi_descriptor_set_layout_->add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                            VK_SHADER_STAGE_COMPUTE_BIT); // Obstacle mask
 
         if (!pressure_jacobi_descriptor_set_layout_->create(app_.device))
         {
@@ -386,7 +433,7 @@ void Simulation::CreateDescriptorSets()
         pressure_jacobi_descriptor_set_B_ = pressure_jacobi_descriptor_set_layout_->allocate(descriptor_pool_->get());
     }
 
-    // Pressure calculation using unified kernel
+    // Pressure calculation using Poisson filter
     {
         pressure_kernel_descriptor_set_layout_ = lava::descriptor::make();
         pressure_kernel_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -397,6 +444,8 @@ void Simulation::CreateDescriptorSets()
                                                             VK_SHADER_STAGE_COMPUTE_BIT); // Temp texture
         pressure_kernel_descriptor_set_layout_->add_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                             VK_SHADER_STAGE_COMPUTE_BIT); // Temp texture 1
+        pressure_kernel_descriptor_set_layout_->add_binding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                            VK_SHADER_STAGE_COMPUTE_BIT); // Obstacle mask
 
         if (!pressure_kernel_descriptor_set_layout_->create(app_.device))
         {
@@ -416,6 +465,8 @@ void Simulation::CreateDescriptorSets()
                                                  VK_SHADER_STAGE_COMPUTE_BIT); // Advected velocity field
         velocity_update_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                  VK_SHADER_STAGE_COMPUTE_BIT); // Fixed velocity field
+        velocity_update_set_layout_->add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                 VK_SHADER_STAGE_COMPUTE_BIT); // Obstacle mask
 
         if (!velocity_update_set_layout_->create(app_.device))
         {
@@ -435,6 +486,8 @@ void Simulation::CreateDescriptorSets()
                                               VK_SHADER_STAGE_COMPUTE_BIT); // Previous color field
         advect_color_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                               VK_SHADER_STAGE_COMPUTE_BIT); // Advected color field
+        advect_color_set_layout_->add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                              VK_SHADER_STAGE_COMPUTE_BIT); // Obstacle mask
 
         if (!advect_color_set_layout_->create(app_.device))
         {
@@ -452,6 +505,8 @@ void Simulation::CreateDescriptorSets()
                                               VK_SHADER_STAGE_COMPUTE_BIT); // Temporary color field
         color_update_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                               VK_SHADER_STAGE_COMPUTE_BIT); // Target color field
+        color_update_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                              VK_SHADER_STAGE_COMPUTE_BIT); // Obstacle mask
 
         if (!color_update_set_layout_->create(app_.device))
         {
@@ -462,18 +517,19 @@ void Simulation::CreateDescriptorSets()
         color_update_descriptor_set_ = color_update_set_layout_->allocate(descriptor_pool_->get());
     }
 
-    // PressureRelaxation
+    // Pressure relaxation
     {
         relaxation_descriptor_set_layout_ = lava::descriptor::make();
-        // Divergence_texture
+        
         relaxation_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                                       VK_SHADER_STAGE_COMPUTE_BIT);
-        // Previous_pressure_texture
+                                                       VK_SHADER_STAGE_COMPUTE_BIT); // Divergence field      
         relaxation_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                                       VK_SHADER_STAGE_COMPUTE_BIT);
-        // Pressure_texture
+                                                       VK_SHADER_STAGE_COMPUTE_BIT); // Previous pressure field     
         relaxation_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                                       VK_SHADER_STAGE_COMPUTE_BIT);
+                                                       VK_SHADER_STAGE_COMPUTE_BIT); // Pressure field
+        relaxation_descriptor_set_layout_->add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                       VK_SHADER_STAGE_COMPUTE_BIT); // Obstacle mask
+
         if (!relaxation_descriptor_set_layout_->create(app_.device))
         {
             throw std::runtime_error("Failed to create relaxation descriptor set layout.");
@@ -488,7 +544,7 @@ void Simulation::CreateDescriptorSets()
         }
     }
 
-    // Pressure Restriction
+    // Pressure restriction
     {
         restriction_descriptor_set_layout_ = lava::descriptor::make();
         // Fine grid texture
@@ -510,7 +566,7 @@ void Simulation::CreateDescriptorSets()
         }
     }
 
-    // Pressure Prolongation
+    // Pressure prolongation
     {
         prolongation_descriptor_set_layout_ = lava::descriptor::make();
         // Coarse grid texture
@@ -533,7 +589,7 @@ void Simulation::CreateDescriptorSets()
         }
     }
 
-    // Pressure Relaxation using Poisson Filter
+    // Pressure relaxation using Poisson filter
     {
         poisson_relaxation_descriptor_set_layout_ = lava::descriptor::make();
 
@@ -545,6 +601,8 @@ void Simulation::CreateDescriptorSets()
                                                                VK_SHADER_STAGE_COMPUTE_BIT); // Temp texture
         poisson_relaxation_descriptor_set_layout_->add_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                                VK_SHADER_STAGE_COMPUTE_BIT); // Temp texture 1
+        poisson_relaxation_descriptor_set_layout_->add_binding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                               VK_SHADER_STAGE_COMPUTE_BIT); // Obstacle mask
 
         if (!poisson_relaxation_descriptor_set_layout_->create(app_.device))
         {
@@ -589,7 +647,7 @@ void Simulation::SetupPipelines()
 {
     auto create_pipeline = [&](lava::compute_pipeline::s_ptr &pipeline, const char *shader_name,
                                lava::descriptor::s_ptr descriptor_set_layout, VkShaderStageFlagBits stage,
-                               lava::pipeline_layout::s_ptr &existing_pipeline_layout, size_t push_constant_size)
+                               lava::pipeline_layout::s_ptr &existing_pipeline_layout, size_t push_constant_size = 0)
     {
         pipeline = lava::compute_pipeline::make(app_.device);
 
@@ -624,6 +682,9 @@ void Simulation::SetupPipelines()
             throw std::runtime_error(std::string("Failed to create pipeline for: ") + shader_name);
         }
     };
+
+    create_pipeline(obstacle_mask_pipeline_, "ObstacleMaskFilling.comp", obstacle_mask_descriptor_set_layout_,
+                    VK_SHADER_STAGE_COMPUTE_BIT, obstacle_mask_pipeline_layout_);
 
     create_pipeline(advect_pipeline_, "VelocityAdvection.comp", advect_descriptor_set_layout_,
                     VK_SHADER_STAGE_COMPUTE_BIT, advect_pipeline_layout_, sizeof(SimulationConstants));
@@ -682,6 +743,15 @@ void Simulation::UpdateDescriptorSets()
         app_.device->vkUpdateDescriptorSets(static_cast<uint32_t>(write_sets.size()), write_sets.data(), 0, nullptr);
     };
 
+    // Obstacle mask filling
+    {
+        VkDescriptorImageInfo obstacle_mask_info = {.sampler = VK_NULL_HANDLE,
+                                                    .imageView = obstacle_mask_texture_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+        write_descriptor_sets(obstacle_mask_descriptor_set_, {obstacle_mask_info}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+    }
+
     // Velocity advection
     {
         VkDescriptorImageInfo velocity_field_info = {.sampler = velocity_field_texture_->get_sampler(),
@@ -691,9 +761,14 @@ void Simulation::UpdateDescriptorSets()
             .sampler = VK_NULL_HANDLE,
             .imageView = advected_velocity_field_texture_->get_image()->get_view(),
             .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo obstacle_mask_info = {.sampler = obstacle_mask_texture_->get_sampler(),
+                                                    .imageView = obstacle_mask_texture_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-        write_descriptor_sets(advect_descriptor_set_, {velocity_field_info, advected_velocity_field_info},
-                              {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+        write_descriptor_sets(advect_descriptor_set_,
+                              {velocity_field_info, advected_velocity_field_info, obstacle_mask_info},
+                              {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
     }
 
     // Divergence calculation
@@ -705,9 +780,14 @@ void Simulation::UpdateDescriptorSets()
         VkDescriptorImageInfo divergence_field_info = {.sampler = VK_NULL_HANDLE,
                                                        .imageView = divergence_field_texture_->get_image()->get_view(),
                                                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo obstacle_mask_info = {.sampler = obstacle_mask_texture_->get_sampler(),
+                                                    .imageView = obstacle_mask_texture_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-        write_descriptor_sets(divergence_descriptor_set_, {advected_velocity_field_info, divergence_field_info},
-                              {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+        write_descriptor_sets(divergence_descriptor_set_,
+                              {advected_velocity_field_info, divergence_field_info, obstacle_mask_info},
+                              {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
     }
 
     // Pressure projection using Jacobi iteration
@@ -723,16 +803,23 @@ void Simulation::UpdateDescriptorSets()
                                                        .imageView =
                                                            pressure_field_jacobi_texture_B_->get_image()->get_view(),
                                                        .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo obstacle_mask_info = {.sampler = obstacle_mask_texture_->get_sampler(),
+                                                    .imageView = obstacle_mask_texture_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
         write_descriptor_sets(
-            pressure_jacobi_descriptor_set_A_, {divergence_field_info, pressure_field_A_info, pressure_field_B_info},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+            pressure_jacobi_descriptor_set_A_,
+            {divergence_field_info, pressure_field_A_info, pressure_field_B_info, obstacle_mask_info},
+                              {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
         write_descriptor_sets(
-            pressure_jacobi_descriptor_set_B_, {divergence_field_info, pressure_field_B_info, pressure_field_A_info},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+            pressure_jacobi_descriptor_set_B_,
+            {divergence_field_info, pressure_field_B_info, pressure_field_A_info, obstacle_mask_info},
+                              {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
     }
 
-    // Pressure projection using unified kernel
+    // Pressure projection using Poisson filter
     {
         VkDescriptorImageInfo divergence_field_info = {.sampler = VK_NULL_HANDLE,
                                                        .imageView = divergence_field_texture_->get_image()->get_view(),
@@ -752,10 +839,15 @@ void Simulation::UpdateDescriptorSets()
                                                     .imageView = temp_texture1_->get_image()->get_view(),
                                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
-        write_descriptor_sets(pressure_kernel_descriptor_set_,
-                              {divergence_field_info, pressure_field_info, temp_texture_info, temp_texture1_info},
-                              {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+        VkDescriptorImageInfo obstacle_mask_info = {.sampler = obstacle_mask_texture_->get_sampler(),
+                                                    .imageView = obstacle_mask_texture_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+        write_descriptor_sets(
+            pressure_kernel_descriptor_set_,
+            {divergence_field_info, pressure_field_info, temp_texture_info, temp_texture1_info, obstacle_mask_info},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
     }
 
     // Velocity update
@@ -771,10 +863,15 @@ void Simulation::UpdateDescriptorSets()
         VkDescriptorImageInfo velocity_field_info = {.sampler = VK_NULL_HANDLE,
                                                      .imageView = velocity_field_texture_->get_image()->get_view(),
                                                      .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo obstacle_mask_info = {.sampler = obstacle_mask_texture_->get_sampler(),
+                                                    .imageView = obstacle_mask_texture_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
         write_descriptor_sets(
-            velocity_update_descriptor_set_, {pressure_field_A_info, advected_velocity_field_info, velocity_field_info},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+            velocity_update_descriptor_set_,
+            {pressure_field_A_info, advected_velocity_field_info, velocity_field_info, obstacle_mask_info},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
     }
 
     // Advect color
@@ -788,11 +885,14 @@ void Simulation::UpdateDescriptorSets()
         VkDescriptorImageInfo color_field_B_info = {.sampler = VK_NULL_HANDLE,
                                                     .imageView = color_field_texture_B_->get_image()->get_view(),
                                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo obstacle_mask_info = {.sampler = obstacle_mask_texture_->get_sampler(),
+                                                    .imageView = obstacle_mask_texture_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
         write_descriptor_sets(advect_color_descriptor_set_,
-                              {velocity_field_info, color_field_A_info, color_field_B_info},
+                              {velocity_field_info, color_field_A_info, color_field_B_info, obstacle_mask_info},
                               {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
     }
 
     // Update color field
@@ -803,9 +903,14 @@ void Simulation::UpdateDescriptorSets()
         VkDescriptorImageInfo color_field_B_info = {.sampler = color_field_texture_B_->get_sampler(),
                                                     .imageView = color_field_texture_B_->get_image()->get_view(),
                                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo obstacle_mask_info = {.sampler = obstacle_mask_texture_->get_sampler(),
+                                                    .imageView = obstacle_mask_texture_->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-        write_descriptor_sets(color_update_descriptor_set_, {color_field_B_info, color_field_A_info},
-                              {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+        write_descriptor_sets(color_update_descriptor_set_,
+                              {color_field_B_info, color_field_A_info, obstacle_mask_info},
+                              {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
     }
 
     // Pressure Relaxation
@@ -815,22 +920,32 @@ void Simulation::UpdateDescriptorSets()
             VkDescriptorImageInfo divergence_info = {.sampler = VK_NULL_HANDLE,
                                                      .imageView = divergence_field_texture_->get_image()->get_view(),
                                                      .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
             VkDescriptorImageInfo prev_pressure_info = {
                 .sampler = VK_NULL_HANDLE,
                 .imageView = pressure_multigrid_texture_A_[level]->get_image()->get_view(),
                 .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
             VkDescriptorImageInfo curr_pressure_info = {
                 .sampler = VK_NULL_HANDLE,
                 .imageView = pressure_multigrid_texture_B_[level]->get_image()->get_view(),
                 .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
-            write_descriptor_sets(
-                relaxation_descriptor_sets_A_[level], {divergence_info, prev_pressure_info, curr_pressure_info},
-                {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+            VkDescriptorImageInfo obstacle_mask_info = {.sampler = obstacle_mask_texture_->get_sampler(),
+                                                        .imageView = obstacle_mask_texture_->get_image()->get_view(),
+                                                        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
             write_descriptor_sets(
-                relaxation_descriptor_sets_B_[level], {divergence_info, curr_pressure_info, prev_pressure_info},
-                {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+                relaxation_descriptor_sets_A_[level],
+                {divergence_info, prev_pressure_info, curr_pressure_info, obstacle_mask_info},
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
+
+            write_descriptor_sets(
+                relaxation_descriptor_sets_B_[level],
+                {divergence_info, curr_pressure_info, prev_pressure_info, obstacle_mask_info},
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
         }
     }
 
@@ -894,10 +1009,15 @@ void Simulation::UpdateDescriptorSets()
                                                             multigrid_temp_textures1_[level]->get_image()->get_view(),
                                                         .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
-            write_descriptor_sets(poisson_relaxation_descriptor_sets_[level],
-                                  {divergence_field_info, pressure_field_info, temp_texture_info, temp_texture1_info},
-                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+            VkDescriptorImageInfo obstacle_mask_info = {.sampler = obstacle_mask_texture_->get_sampler(),
+                                                        .imageView = obstacle_mask_texture_->get_image()->get_view(),
+                                                        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+            write_descriptor_sets(
+                poisson_relaxation_descriptor_sets_[level],
+                {divergence_field_info, pressure_field_info, temp_texture_info, temp_texture1_info, obstacle_mask_info},
+                {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
         }
     }
 
@@ -1249,7 +1369,7 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
     simulation_constants.divergence_height = static_cast<int>(window_size.y);
     simulation_constants.fluid_density = 0.5f;
     simulation_constants.vorticity_strength = 0.5f;
-    simulation_constants.reset_color = reset_flag_;
+    simulation_constants.reset_color = static_cast<int>(reset_flag_);
 
     reset_flag_ = false;
 
@@ -1259,6 +1379,25 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
     multigrid_constants.coarse_width = app_.target->get_size().x / (1 << (multigrid_levels_ + 1));
     multigrid_constants.coarse_height = app_.target->get_size().y / (1 << (multigrid_levels_ + 1));
 
+    // obstacle mask filling pass
+    {
+        if (upload_obstacle_mask_)
+        {
+            obstacle_mask_texture_->get_image()->transition_layout(
+                cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+            obstacle_mask_pipeline_->bind(cmd_buffer);
+
+            vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    obstacle_mask_pipeline_->get_layout()->get(), 0, 1, &obstacle_mask_descriptor_set_,
+                                    0, nullptr);
+
+            vkCmdDispatch(cmd_buffer, group_count_x_, group_count_y_, 1);
+
+            upload_obstacle_mask_ = false;
+        }
+    }
+
     // Advect velocity pass
     {
         velocity_field_texture_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1267,6 +1406,11 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
 
         advected_velocity_field_texture_->get_image()->transition_layout(
             cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        obstacle_mask_texture_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                               VK_ACCESS_SHADER_READ_BIT,
+                                                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
         advect_pipeline_->bind(cmd_buffer);
 
         vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, advect_pipeline_->get_layout()->get(), 0, 1,
@@ -1284,6 +1428,9 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
             cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         divergence_field_texture_->get_image()->transition_layout(
             cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        obstacle_mask_texture_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                               VK_ACCESS_SHADER_READ_BIT,
+                                                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
         divergence_pipeline_->bind(cmd_buffer);
 
@@ -1298,6 +1445,10 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
 
     // Project pressure passes
     {
+        obstacle_mask_texture_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                               VK_ACCESS_SHADER_READ_BIT,
+                                                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
         if (pressure_projection_method_ == PressureProjectionMethod::Jacobi)
         {
             JacobiPressureProjection(cmd_buffer, simulation_constants);

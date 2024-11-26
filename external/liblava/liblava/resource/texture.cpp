@@ -19,7 +19,9 @@ bool texture::create(device::ptr device,
                      layer::list const& l,
                      texture_type t,
                      VkSamplerAddressMode sampler_address_mode,
-                     VkImageUsageFlags usage_flags) {
+                     VkImageUsageFlags usage_flags,
+                     VkFilter filter,
+                     VkSamplerMipmapMode mipmap_mode) {
     m_layers = l;
     m_type = t;
 
@@ -38,9 +40,9 @@ bool texture::create(device::ptr device,
 
     VkSamplerCreateInfo sampler_info{
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter = VK_FILTER_LINEAR,
-        .minFilter = VK_FILTER_LINEAR,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .magFilter = filter,
+        .minFilter = filter,
+        .mipmapMode = mipmap_mode,
         .addressModeU = sampler_address_mode,
         .addressModeV = sampler_address_mode,
         .addressModeW = sampler_address_mode,

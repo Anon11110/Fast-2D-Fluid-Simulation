@@ -7,6 +7,9 @@ layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(set = 0, binding = 0, rg16f) uniform readonly image2D velocity_texture;
 layout(set = 0, binding = 1, r16f) uniform writeonly image2D divergence_texture;
+layout(set = 0, binding = 2) uniform sampler2D obstacle_mask_texture;
+
+#include "Commons.glsl"
 
 vec2 LoadVelocity(ivec2 coords)
 {
@@ -38,14 +41,38 @@ void main()
 
     float grid_spacing = max(1.0 / push_constants.texture_width, 1.0 / push_constants.texture_height);
 
-    vec2 velocity = LoadVelocity(pixel_coords);
-    vec2 velocity_right = LoadVelocity(pixel_coords + ivec2(1, 0));
-    vec2 velocity_left = LoadVelocity(pixel_coords + ivec2(-1, 0));
-    vec2 velocity_up = LoadVelocity(pixel_coords + ivec2(0, 1));
-    vec2 velocity_down = LoadVelocity(pixel_coords + ivec2(0, -1));
+    bool current_is_obstacle = IsObstacle(pixel_coords);
 
-    // Calculate divergence using incompressibility condition
-    float divergence = 0.5 / grid_spacing * (velocity_right.x - velocity_left.x + velocity_up.y - velocity_down.y);
+    float divergence = 0;
+    if (!current_is_obstacle)
+    {
+
+        vec2 velocity = LoadVelocity(pixel_coords);
+        vec2 velocity_right = LoadVelocity(pixel_coords + ivec2(1, 0));
+        vec2 velocity_left = LoadVelocity(pixel_coords + ivec2(-1, 0));
+        vec2 velocity_up = LoadVelocity(pixel_coords + ivec2(0, 1));
+        vec2 velocity_down = LoadVelocity(pixel_coords + ivec2(0, -1));
+
+        if (IsObstacle(vec2(pixel_coords.x + 1, pixel_coords.y)))
+        {
+            velocity_right.x = 0.0;
+        }
+        if (IsObstacle(vec2(pixel_coords.x - 1, pixel_coords.y)))
+        {
+            velocity_left.x = 0.0;
+        }
+        if (IsObstacle(vec2(pixel_coords.x, pixel_coords.y + 1)))
+        {
+            velocity_up.y = 0.0;
+        }
+        if (IsObstacle(vec2(pixel_coords.x, pixel_coords.y - 1)))
+        {
+            velocity_down.y = 0.0;
+        }
+
+        // Calculate divergence using incompressibility condition
+        divergence = 0.5 / grid_spacing * (velocity_right.x - velocity_left.x + velocity_up.y - velocity_down.y);
+    }
 
     if (push_constants.reset_flag)
     {

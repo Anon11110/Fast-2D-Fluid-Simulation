@@ -24,7 +24,7 @@ struct SimulationConstants
     int divergence_height;
     float fluid_density;
     float vorticity_strength;
-    bool reset_color;
+    int reset_color;
 };
 
 struct MultigridConstants
@@ -76,6 +76,11 @@ class Simulation
     [[nodiscard]] lava::texture::s_ptr GetColorTexture() const
     {
         return color_field_texture_A_;
+    }
+
+    [[nodiscard]] lava::texture::s_ptr GetObstacleTexture() const
+    {
+        return obstacle_mask_texture_;
     }
 
     [[nodiscard]] PressureProjectionMethod GetPressureProjectionMethod() const
@@ -142,17 +147,25 @@ class Simulation
 
     bool reset_flag_ = true;
     bool calculate_residual_error_ = false;
+    bool upload_obstacle_mask_ = true;
     const uint32_t PRESSURE_CONVERGENCE_CHECK_FRAME = 1000;
     uint32_t frame_count_ = 0;
     std::vector<float> residual_host_data_;
     lava::buffer::s_ptr staging_buffer_;
 
-    PressureProjectionMethod pressure_projection_method_ = PressureProjectionMethod::Multigrid_Poisson;
+    PressureProjectionMethod pressure_projection_method_ = PressureProjectionMethod::Poisson_Filter;
 
     uint32_t group_count_x_, group_count_y_;
     uint32_t pressure_jacobi_iterations_ = 32;
     uint32_t multigrid_levels_ = 5;
     uint32_t relaxation_iterations_ = 4;
+
+    // Obstacle mask
+    lava::texture::s_ptr obstacle_mask_texture_;
+    lava::descriptor::s_ptr obstacle_mask_descriptor_set_layout_;
+    VkDescriptorSet obstacle_mask_descriptor_set_{};
+    lava::pipeline_layout::s_ptr obstacle_mask_pipeline_layout_;
+    lava::compute_pipeline::s_ptr obstacle_mask_pipeline_;
 
     // Velocity advection
     lava::texture::s_ptr velocity_field_texture_;

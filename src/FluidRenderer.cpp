@@ -89,13 +89,9 @@ void FluidRenderer::CreateDescriptorSets()
     render_descriptor_set_layout_ = lava::descriptor::make();
 
     render_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                               VK_SHADER_STAGE_FRAGMENT_BIT); // Velocity texture
-    render_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                               VK_SHADER_STAGE_FRAGMENT_BIT); // Divergence texture
-    render_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                               VK_SHADER_STAGE_FRAGMENT_BIT); // Pressure texture
-    render_descriptor_set_layout_->add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                                VK_SHADER_STAGE_FRAGMENT_BIT); // Color texture
+    render_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                               VK_SHADER_STAGE_FRAGMENT_BIT); // Obstacle mask
 
     if (!render_descriptor_set_layout_->create(app_.device))
     {
@@ -114,24 +110,14 @@ void FluidRenderer::CreateDescriptorSets()
 
 void FluidRenderer::UpdateDescriptorSets()
 {
-    auto velocity_texture = simulation_->GetVelocityTexture();
-    VkDescriptorImageInfo velocity_texture_info = {.sampler = velocity_texture->get_sampler(),
-                                                   .imageView = velocity_texture->get_image()->get_view(),
-                                                   .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-
-    auto divergence_texture = simulation_->GetDivergenceTexture();
-    VkDescriptorImageInfo divergence_texture_info = {.sampler = divergence_texture->get_sampler(),
-                                                     .imageView = divergence_texture->get_image()->get_view(),
-                                                     .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-
-    auto pressure_texture = simulation_->GetPressureTexture();
-    VkDescriptorImageInfo pressure_texture_info = {.sampler = pressure_texture->get_sampler(),
-                                                   .imageView = pressure_texture->get_image()->get_view(),
-                                                   .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-
     auto color_texture = simulation_->GetColorTexture();
     VkDescriptorImageInfo color_texture_info = {.sampler = color_texture->get_sampler(),
                                                 .imageView = color_texture->get_image()->get_view(),
+                                                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+    auto obstacle_mask = simulation_->GetObstacleTexture();
+    VkDescriptorImageInfo obstacle_mask_info = {.sampler = obstacle_mask->get_sampler(),
+                                                .imageView = obstacle_mask->get_image()->get_view(),
                                                 .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
     std::vector<VkWriteDescriptorSet> write_descriptor_sets = {
@@ -140,25 +126,13 @@ void FluidRenderer::UpdateDescriptorSets()
                              .dstBinding = 0,
                              .descriptorCount = 1,
                              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                             .pImageInfo = &velocity_texture_info},
+                             .pImageInfo = &color_texture_info},
         VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                              .dstSet = render_descriptor_set_,
                              .dstBinding = 1,
                              .descriptorCount = 1,
                              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                             .pImageInfo = &divergence_texture_info},
-        VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                             .dstSet = render_descriptor_set_,
-                             .dstBinding = 2,
-                             .descriptorCount = 1,
-                             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                             .pImageInfo = &pressure_texture_info},
-        VkWriteDescriptorSet{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                             .dstSet = render_descriptor_set_,
-                             .dstBinding = 3,
-                             .descriptorCount = 1,
-                             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                             .pImageInfo = &color_texture_info}};
+                             .pImageInfo = &obstacle_mask_info}};
 
     app_.device->vkUpdateDescriptorSets(uint32_t(write_descriptor_sets.size()), write_descriptor_sets.data(), 0,
                                         nullptr);
@@ -193,7 +167,7 @@ void FluidRenderer::CreatePipeline()
     render_pipeline_->set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
     render_pipeline_->set_depth_test_and_write(false, false);
     render_pipeline_->set_rasterization_polygon_mode(VK_POLYGON_MODE_FILL);
-    render_pipeline_->set_rasterization_cull_mode(VK_CULL_MODE_BACK_BIT);
+    render_pipeline_->set_rasterization_cull_mode(VK_CULL_MODE_NONE);
     render_pipeline_->set_rasterization_front_face(VK_FRONT_FACE_CLOCKWISE);
     render_pipeline_->add_color_blend_attachment();
     render_pipeline_->set_layout(render_pipeline_layout_);
@@ -210,7 +184,7 @@ void FluidRenderer::CreatePipeline()
         render_pipeline_->set_viewport_and_scissor(cmd_buffer, app_.target->get_size());
         render_pipeline_layout_->bind(cmd_buffer, render_descriptor_set_, 0, {}, VK_PIPELINE_BIND_POINT_GRAPHICS);
 
-        vkCmdDraw(cmd_buffer, 6, 1, 0, 0);
+        vkCmdDraw(cmd_buffer, 3, 1, 0, 0);
     };
 }
 
@@ -221,7 +195,7 @@ void FluidRenderer::OnRender(uint32_t frame, VkCommandBuffer cmd_buffer)
     render_pipeline_->bind(cmd_buffer);
     render_pipeline_->set_viewport_and_scissor(cmd_buffer, app_.target->get_size());
     render_pipeline_layout_->bind(cmd_buffer, render_descriptor_set_, 0, {}, VK_PIPELINE_BIND_POINT_GRAPHICS);
-    vkCmdDraw(cmd_buffer, 6, 1, 0, 0);
+    vkCmdDraw(cmd_buffer, 3, 1, 0, 0);
 
     lava::end_label(cmd_buffer);
 }

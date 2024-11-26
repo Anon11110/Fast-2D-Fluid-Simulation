@@ -7,6 +7,9 @@ layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(set = 0, binding = 0, rgba8) uniform readonly image2D source_texture;
 layout(set = 0, binding = 1, rgba8) uniform writeonly image2D destination_texture;
+layout(set = 0, binding = 2) uniform sampler2D obstacle_mask_texture;
+
+#include "Commons.glsl"
 
 void main()
 {
@@ -15,6 +18,16 @@ void main()
     if (pixel_coords.x < 0 || pixel_coords.x >= push_constants.texture_width ||
         pixel_coords.y < 0 || pixel_coords.y >= push_constants.texture_height)
     {
+        return;
+    }
+
+    vec2 pixel_size = vec2(1.0) / vec2(push_constants.texture_width, push_constants.texture_height);
+    vec2 uv_coords = (vec2(pixel_coords) + 0.5) * pixel_size;
+
+    if (IsObstacle(uv_coords))
+    {
+        vec4 color = vec4(1.0, 0.55, 0.0, 1.0) + vec4(0.0, 0.8, 0.6, 1.0) + vec4(0.1, 0.6, 0.9, 1.0);
+        imageStore(destination_texture, pixel_coords, color / 3);
         return;
     }
 
@@ -49,15 +62,7 @@ void main()
         {
             pixel_color = vec4(0.1, 0.6, 0.9, 1.0);
         }
-
     }
-
-    vec2 uv_scale = vec2(1.0) / vec2(push_constants.texture_width, push_constants.texture_height);
-    vec2 texel_uv = (vec2(pixel_coords) + vec2(0.5)) * uv_scale;
 
     imageStore(destination_texture, pixel_coords, pixel_color);
 }
-
-
-
-

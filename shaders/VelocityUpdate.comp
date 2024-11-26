@@ -8,6 +8,9 @@ layout(local_size_x = 16, local_size_y = 16) in;
 layout(set = 0, binding = 0, r16f) uniform readonly image2D pressure_field;
 layout(set = 0, binding = 1, rg16f) uniform readonly image2D advected_velocity_field;
 layout(set = 0, binding = 2, rg16f) uniform writeonly image2D velocity_field;
+layout(set = 0, binding = 3) uniform sampler2D obstacle_mask_texture;
+
+#include "Commons.glsl"
 
 float LoadPressure(ivec2 coords) 
 {
@@ -30,7 +33,14 @@ void main()
         return;
     }
 
+    if (IsObstacle(pixel_coords))
+    {
+        imageStore(velocity_field, pixel_coords, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
     vec2 uv_scale = vec2(1.0) / vec2(push_constants.texture_width, push_constants.texture_height);
+    vec2 texel_uv = (vec2(pixel_coords) + 0.5) * uv_scale;
     float h = max(uv_scale.x, uv_scale.y);
 
     vec2 velocity = imageLoad(advected_velocity_field, pixel_coords).rg;
@@ -43,6 +53,8 @@ void main()
     // Adjust velocity to make the field divergence-free
     velocity -= 0.5 / h * vec2(pressure_right - pressure_left, pressure_up - pressure_down);
 
+    // velocity = ApplySlipperyBoundary(texel_uv, velocity);
+
     if (push_constants.reset_flag) 
     {
         velocity = vec2(0.0);
@@ -50,7 +62,3 @@ void main()
 
     imageStore(velocity_field, pixel_coords, vec4(velocity, 0.0, 1.0));
 }
-
-
-
-

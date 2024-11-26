@@ -8,6 +8,9 @@ layout(local_size_x = 16, local_size_y = 16) in;
 layout(set = 0, binding = 0, r16f) uniform readonly image2D divergence_texture;
 layout(set = 0, binding = 1, r16f) uniform readonly image2D previous_pressure_texture;
 layout(set = 0, binding = 2, r16f) uniform writeonly image2D pressure_texture;
+layout(set = 0, binding = 3) uniform sampler2D obstacle_mask_texture;
+
+#include "Commons.glsl"
 
 float LoadPressure(ivec2 coords)
 {
@@ -18,6 +21,18 @@ float LoadPressure(ivec2 coords)
     coords.y = (coords.y < push_constants.texture_height) ?
         ((coords.y < 0) ? abs(coords.y) - 1 : coords.y) :
         (2 * push_constants.texture_height - coords.y - 1);
+
+    vec2 pixel_size = vec2(1.0) / vec2(push_constants.texture_width, push_constants.texture_height);
+    vec2 sample_uv = (vec2(coords) + 0.5) * pixel_size;
+
+    // If sampling point is in obstacle, use Neumann boundary condition by reflecting the pressure from the fluid side
+    if (IsObstacle(sample_uv))
+    {
+        vec2 normal = CalculateNormal(sample_uv);
+        ivec2 reflection = coords - 2 * ivec2(round(normal));
+        reflection = clamp(reflection, ivec2(0), ivec2(push_constants.texture_width - 1, push_constants.texture_height - 1));
+        return imageLoad(previous_pressure_texture, reflection).r;
+    }
 
     return imageLoad(previous_pressure_texture, coords).r;
 }
@@ -30,6 +45,9 @@ void main()
     {
         return;
     }
+
+    vec2 pixel_size = vec2(1.0) / vec2(push_constants.texture_width, push_constants.texture_height);
+    vec2 uv_coords = (vec2(pixel_coords) + 0.5) * pixel_size;
 
     float divergence = imageLoad(divergence_texture, pixel_coords).r;
 

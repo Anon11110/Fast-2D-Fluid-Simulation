@@ -1,4 +1,3 @@
-
 #version 450
 
 #include "PushConstants.glsl"
@@ -7,28 +6,60 @@ layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(set = 0, binding = 0) uniform sampler2D velocity_texture;
 layout(set = 0, binding = 1, rg16f) uniform writeonly image2D advected_velocity_texture;
+layout(set = 0, binding = 2) uniform sampler2D obstacle_mask_texture;
+
+#include "Commons.glsl"
+
+const int advect_iterations = 10;
 
 vec2 SampleVelocity(vec2 uv)
 {
     vec2 velocity = texture(velocity_texture, uv).rg;
     vec2 wrap = vec2(1.0);
 
-    if (uv.x < 0.0 || uv.x > 1.0)
-    {
-        wrap.x = -1.0;
-    }
-    if (uv.y < 0.0 || uv.y > 1.0)
-    {
-        wrap.y = -1.0;
-    }
+    if (uv.x < 0.0 || uv.x > 1.0) wrap.x = -1.0;
+    if (uv.y < 0.0 || uv.y > 1.0) wrap.y = -1.0;
 
     return wrap * velocity;
+}
+
+vec2 ComputeVorticityForce(vec2 texel_uv, vec2 uv_scale, vec2 current_velocity, float grid_spacing)
+{
+    // Sample velocities for vorticity computation
+    vec2 velocity_ld = SampleVelocity(texel_uv - uv_scale);
+    vec2 velocity_rd = SampleVelocity(texel_uv + vec2(uv_scale.x, -uv_scale.y));
+    vec2 velocity_ru = SampleVelocity(texel_uv + uv_scale);
+    vec2 velocity_lu = SampleVelocity(texel_uv + vec2(-uv_scale.x, uv_scale.y));
+    vec2 velocity_ll = SampleVelocity(texel_uv + vec2(-2.0 * uv_scale.x, 0.0));
+    vec2 velocity_rr = SampleVelocity(texel_uv + vec2(2.0 * uv_scale.x, 0.0));
+    vec2 velocity_dd = SampleVelocity(texel_uv + vec2(0.0, -2.0 * uv_scale.y));
+    vec2 velocity_uu = SampleVelocity(texel_uv + vec2(0.0, 2.0 * uv_scale.y));
+
+    // Calculate curl at each direction
+    float curl_left = velocity_lu.x - velocity_ld.x + velocity_ll.y - current_velocity.y;
+    float curl_right = velocity_ru.x - velocity_rd.x + current_velocity.y - velocity_rr.y;
+    float curl_down = current_velocity.x - velocity_dd.x + velocity_ld.y - velocity_rd.y;
+    float curl_up = velocity_uu.x - current_velocity.x + velocity_lu.y - velocity_ru.y;
+
+    vec2 vorticity_force = vec2(curl_down - curl_up, curl_right - curl_left);
+    float vorticity_magnitude = length(vorticity_force);
+
+    if (vorticity_magnitude > 1e-6)
+    {
+        vorticity_force *= grid_spacing * push_constants.vorticity_strength / vorticity_magnitude;
+    }
+    else
+    {
+        vorticity_force = vec2(0.0);
+    }
+
+    return vorticity_force;
 }
 
 void main()
 {
     vec2 uv_scale = vec2(1.0) / vec2(push_constants.texture_width, push_constants.texture_height);
-    float grid_scale = max(uv_scale.x, uv_scale.y);
+    float grid_spacing = max(uv_scale.x, uv_scale.y);
 
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     if (pixel_coords.x < 0 || pixel_coords.x >= push_constants.texture_width ||
@@ -38,55 +69,65 @@ void main()
     }
 
     vec2 texel_uv = (vec2(pixel_coords) + 0.5) * uv_scale;
-    vec2 velocity = SampleVelocity(texel_uv);
-    vec2 source_uv = texel_uv;
-    vec2 source_velocity = velocity;
 
-    const int advect_steps = 1;
-    float delta_time = push_constants.delta_time / float(advect_steps);
+    if (IsObstacle(texel_uv))
+    {
+        imageStore(advected_velocity_texture, pixel_coords, vec4(0.0));
+        return;
+    }
+
+    vec2 traced_uv = texel_uv;
+    vec2 current_velocity = SampleVelocity(texel_uv);
+
+    float delta_time = push_constants.delta_time / float(advect_iterations);
 
     // Semi-Lagrangian advection
-    for (int i = 0; i < advect_steps; i++)
+    for (int i = 0; i < advect_iterations; i++)
     {
-        source_uv -= source_velocity * uv_scale / grid_scale * delta_time;
-        source_velocity = SampleVelocity(source_uv);
+        vec2 delta_coords = current_velocity * uv_scale / grid_spacing * delta_time;
+        vec2 next_uv = traced_uv - delta_coords;
 
-        if (source_uv.x <= 0.01 && source_uv.y > 0.45 && source_uv.y < 0.55)
+        if (IsObstacle(next_uv))
         {
-            source_velocity += vec2(10.0, 0.0) * push_constants.delta_time;
+            vec2 normal = CalculateNormal(next_uv);
+
+            float dot_product = dot(current_velocity, normal);
+            vec2 reflection = current_velocity - 2.0 * dot_product * normal;
+
+            // Apply slip boundary condition
+            vec2 tangential = reflection - dot(reflection, normal) * normal;
+
+            // Scale back the movement to stay along boundary
+            float remaining_time = delta_time * (1.0 - length(traced_uv - next_uv) / length(delta_coords));
+            if (remaining_time > 0.0)
+            {
+                vec2 slip_delta = tangential * uv_scale / grid_spacing * remaining_time;
+                vec2 slip_next_uv = traced_uv + slip_delta;
+                
+                if (!IsObstacle(slip_next_uv))
+                {
+                    traced_uv = slip_next_uv;
+                    current_velocity = tangential;
+                }
+            }
+            break;
+        }
+        else
+        {
+            traced_uv = next_uv;
+            current_velocity = SampleVelocity(traced_uv);
+        }
+
+        // Apply inflow condition
+        if (traced_uv.x <= 0.01 && traced_uv.y > 0.45 && traced_uv.y < 0.55)
+        {
+            current_velocity += vec2(20.0, 0.0) * push_constants.delta_time;
         }
     }
 
-    // Sample velocities for vorticity computation
-    vec2 velocity_ld = SampleVelocity(texel_uv - uv_scale);
-    vec2 velocity_rd = SampleVelocity(texel_uv + vec2(uv_scale.x, -uv_scale.y));
-    vec2 velocity_ru = SampleVelocity(texel_uv + uv_scale);
-    vec2 velocity_lu = SampleVelocity(texel_uv + vec2(-uv_scale.x, uv_scale.y));
+    vec2 vorticity_force = ComputeVorticityForce(texel_uv, uv_scale, current_velocity, grid_spacing);
 
-    vec2 velocity_ll = SampleVelocity(texel_uv + vec2(-2.0 * uv_scale.x, 0.0));
-    vec2 velocity_rr = SampleVelocity(texel_uv + vec2(2.0 * uv_scale.x, 0.0));
-    vec2 velocity_dd = SampleVelocity(texel_uv + vec2(0.0, -2.0 * uv_scale.y));
-    vec2 velocity_uu = SampleVelocity(texel_uv + vec2(0.0, 2.0 * uv_scale.y));
-
-    // Calculate curl at each direction
-    float curl_left = velocity_lu.x - velocity_ld.x + velocity_ll.y - velocity.y;
-    float curl_right = velocity_ru.x - velocity_rd.x + velocity.y - velocity_rr.y;
-    float curl_down = velocity.x - velocity_dd.x + velocity_ld.y - velocity_rd.y;
-    float curl_up = velocity_uu.x - velocity.x + velocity_lu.y - velocity_ru.y;
-
-    vec2 vorticity_force = vec2(curl_down - curl_up, curl_right - curl_left);
-    float vorticity_magnitude = length(vorticity_force);
-    
-    if (vorticity_magnitude > 0.00001)
-    {
-        vorticity_force *= grid_scale * push_constants.vorticity_strength / vorticity_magnitude;
-    }
-    else
-    {
-        vorticity_force = vec2(0.0);
-    }
-
-    vec2 advected_velocity = source_velocity + vorticity_force;
+    vec2 advected_velocity = current_velocity + vorticity_force;
 
     if (push_constants.reset_flag)
     {

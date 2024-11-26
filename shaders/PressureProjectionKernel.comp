@@ -9,6 +9,9 @@ layout(set = 0, binding = 0, r16f) uniform image2D divergence_texture;
 layout(set = 0, binding = 1, r16f) uniform image2D pressure_texture;
 layout(set = 0, binding = 2, rgba32f) uniform image2D temp_texture;
 layout(set = 0, binding = 3, rgba32f) uniform image2D temp_texture1;
+layout(set = 0, binding = 4) uniform sampler2D obstacle_mask_texture;
+
+#include "Commons.glsl"
 
 const int num_ranks = 4;
 const int ranks_per_texture = 4;
@@ -18,7 +21,7 @@ const int kernel_size = INVERSE_Itr_32_Filter_Size;
 float grid_spacing = max(1.0 / push_constants.texture_width, 1.0 / push_constants.texture_height);
 
 // Function to mirror coordinates for boundary handling
-ivec2 MirrorCoords(ivec2 coords, ivec2 texture_size)
+ivec2 MirrorCoords(ivec2 coords, ivec2 texture_size, vec2 uv_coords)
 {
     ivec2 mirrored_coords = coords;
 
@@ -31,6 +34,15 @@ ivec2 MirrorCoords(ivec2 coords, ivec2 texture_size)
         mirrored_coords.y = -mirrored_coords.y;
     else if (mirrored_coords.y >= texture_size.y)
         mirrored_coords.y = 2 * (texture_size.y - 1) - mirrored_coords.y;
+
+    vec2 sample_uv = (vec2(mirrored_coords) + 0.5) / vec2(texture_size);
+    if (IsObstacle(sample_uv))
+    {
+        vec2 normal = CalculateNormal(uv_coords);
+        ivec2 reflection = mirrored_coords - 2 * ivec2(round(normal));
+        reflection = clamp(reflection, ivec2(0), texture_size - 1);
+        return reflection;
+    }
 
     return mirrored_coords;
 }
@@ -45,7 +57,7 @@ vec4 GetMaskedVector(vec4 input_texture, int count)
     );
 }
 
-void VerticalPass(ivec2 coords, ivec2 texture_size)
+void VerticalPass(ivec2 coords, ivec2 texture_size, vec2 uv_coords)
 {
     vec2 direction = vec2(0.0, 1.0);
     float step_size = (kernel_size - 1) * 0.5;
@@ -56,7 +68,7 @@ void VerticalPass(ivec2 coords, ivec2 texture_size)
     {
         vec2 offset = direction * (float(i) - step_size);
         ivec2 neighbor_coords = coords + ivec2(offset);
-        neighbor_coords = MirrorCoords(neighbor_coords, texture_size);
+        neighbor_coords = MirrorCoords(neighbor_coords, texture_size, uv_coords);
         float value = imageLoad(divergence_texture, neighbor_coords).r;
 
         weighted_average_14 += value * GetMaskedVector(
@@ -77,7 +89,7 @@ void VerticalPass(ivec2 coords, ivec2 texture_size)
     imageStore(temp_texture1, coords, weighted_average_58);
 }
 
-void HorizontalPass(ivec2 coords, ivec2 texture_size)
+void HorizontalPass(ivec2 coords, ivec2 texture_size, vec2 uv_coords)
 {
     vec2 direction = vec2(1.0, 0.0);
     float step_size = (kernel_size - 1) * 0.5;
@@ -87,7 +99,7 @@ void HorizontalPass(ivec2 coords, ivec2 texture_size)
     {
         vec2 offset = direction * (float(i) - step_size);
         ivec2 neighbor_coords = coords + ivec2(offset);
-        neighbor_coords = MirrorCoords(neighbor_coords, texture_size);
+        neighbor_coords = MirrorCoords(neighbor_coords, texture_size, uv_coords);
         
         vec4 intermediate_values_14 = imageLoad(temp_texture, neighbor_coords);
         
@@ -115,10 +127,13 @@ void main()
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     ivec2 texture_size = ivec2(push_constants.texture_width, push_constants.texture_height);
 
-    VerticalPass(pixel_coords, texture_size);
+    vec2 pixel_size = vec2(1.0) / vec2(push_constants.texture_width, push_constants.texture_height);
+    vec2 uv_coords = (vec2(pixel_coords) + 0.5) * pixel_size;
+
+    VerticalPass(pixel_coords, texture_size, uv_coords);
 
     memoryBarrier();
     barrier();
 
-    HorizontalPass(pixel_coords, texture_size);
+    HorizontalPass(pixel_coords, texture_size, uv_coords);
 }

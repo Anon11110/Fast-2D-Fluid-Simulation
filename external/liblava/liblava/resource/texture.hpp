@@ -104,7 +104,9 @@ struct texture : entity {
                 layer::list const& layers = {},
                 texture_type type = texture_type::tex_2d,
                 VkSamplerAddressMode sampler_address_mode = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-                VkImageUsageFlags usage_flags = 0);
+                VkImageUsageFlags usage_flags = 0,
+                VkFilter filter = VK_FILTER_LINEAR,
+                VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR);
 
     /**
      * @brief Destroy the texture
