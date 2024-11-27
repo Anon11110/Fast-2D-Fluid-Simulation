@@ -2,6 +2,7 @@
 #ifndef FLUID_RENDERER_HPP
 #define FLUID_RENDERER_HPP
 
+#include "ResourceManager.hpp"
 #include "Simulation.hpp"
 #include <liblava/lava.hpp>
 
@@ -10,7 +11,13 @@ namespace FluidSimulation
 class FluidRenderer
 {
   public:
-    FluidRenderer(lava::engine &app);
+    using s_ptr = std::shared_ptr<FluidRenderer>;
+
+    explicit FluidRenderer(lava::engine &app);
+    FluidRenderer(const FluidRenderer &) = delete;
+    FluidRenderer &operator=(const FluidRenderer &) = delete;
+    FluidRenderer(FluidRenderer &&other) = delete;
+    FluidRenderer &operator=(FluidRenderer &&other) = delete;
 
     ~FluidRenderer();
 
@@ -36,9 +43,7 @@ class FluidRenderer
 
     Simulation::s_ptr simulation_;
 
-    using s_ptr = std::shared_ptr<FluidRenderer>;
-
-    static s_ptr make(lava::engine &app)
+    static s_ptr Make(lava::engine &app)
     {
         return std::make_shared<FluidRenderer>(app);
     }

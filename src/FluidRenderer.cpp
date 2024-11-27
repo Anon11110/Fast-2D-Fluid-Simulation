@@ -5,7 +5,9 @@ namespace FluidSimulation
 FluidRenderer::FluidRenderer(lava::engine &app) : app_(app)
 {
     swapchain_images_count_ = app_.target->get_frame_count();
-    simulation_ = Simulation::make(app);
+
+    FluidSimulation::ResourceManager::GetInstance(&app).Initialize(&app);
+    simulation_ = Simulation::Make(app);
     AddShaderMappings();
     CreateDescriptorPool();
     CreateDescriptorSets();
@@ -70,7 +72,7 @@ void FluidRenderer::CreateDescriptorPool()
 {
     descriptor_pool_ = lava::descriptor::pool::make();
 
-    constexpr uint32_t set_count = 10;
+    constexpr uint32_t set_count = 1;
 
     std::vector<VkDescriptorPoolSize> pool_sizes = {
         VkDescriptorPoolSize{.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 20},
@@ -110,12 +112,14 @@ void FluidRenderer::CreateDescriptorSets()
 
 void FluidRenderer::UpdateDescriptorSets()
 {
-    auto color_texture = simulation_->GetColorTexture();
+    auto &resource_manager = ResourceManager::GetInstance();
+
+    auto color_texture = resource_manager.GetTexture("color_field_A");
     VkDescriptorImageInfo color_texture_info = {.sampler = color_texture->get_sampler(),
                                                 .imageView = color_texture->get_image()->get_view(),
                                                 .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    auto obstacle_mask = simulation_->GetObstacleTexture();
+    auto obstacle_mask = resource_manager.GetTexture("obstacle_mask");
     VkDescriptorImageInfo obstacle_mask_info = {.sampler = obstacle_mask->get_sampler(),
                                                 .imageView = obstacle_mask->get_image()->get_view(),
                                                 .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};

@@ -27,6 +27,18 @@ add_executable(VkFluidSimulation
     src/main.cpp
     src/FluidRenderer.cpp
     src/Simulation.cpp
+    src/ResourceManager.cpp
+    src/ComputePass.cpp
+    src/ObstacleFillingPass.cpp
+    src/VelocityAdvectionPass.cpp
+    src/DivergenceCalculationPass.cpp
+    src/JacobiPressurePass.cpp
+    src/PoissonPressurePass.cpp
+    src/VCyclePressurePass.cpp
+    src/VelocityUpdatePass.cpp
+    src/ColorAdvectPass.cpp
+    src/ColorUpdatePass.cpp
+    src/ResidualCalculationPass.cpp
 )
 
 target_include_directories(VkFluidSimulation PRIVATE

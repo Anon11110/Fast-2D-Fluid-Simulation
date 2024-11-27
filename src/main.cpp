@@ -18,7 +18,7 @@ int run(int argc, char *argv[])
     if (!app.setup())
         return error::not_ready;
 
-    FluidSimulation::FluidRenderer::s_ptr fluid_renderer = FluidSimulation::FluidRenderer::make(app);
+    FluidSimulation::FluidRenderer::s_ptr fluid_renderer = FluidSimulation::FluidRenderer::Make(app);
     auto render_pipeline = fluid_renderer->GetPipeline();
 
     target_callback swapchain_callback;
@@ -29,7 +29,7 @@ int run(int argc, char *argv[])
             fluid_renderer->Destroy();
         }
 
-        fluid_renderer = FluidSimulation::FluidRenderer::make(app);
+        fluid_renderer = FluidSimulation::FluidRenderer::Make(app);
 
         render_pass::s_ptr render_pass = app.shading.get_pass();
         render_pass->remove(render_pipeline);
