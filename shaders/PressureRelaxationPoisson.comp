@@ -18,7 +18,7 @@ const int ranks_per_texture = 4;
 const bool use_second_texture = (num_ranks > ranks_per_texture);
 
 const int kernel_size = INVERSE_Itr_7_Filter_Size;
-float grid_spacing = max(1.0 / push_constants.divergence_width, 1.0 / push_constants.divergence_height);
+float grid_spacing = max(1.0 / push_constants.texture_width, 1.0 / push_constants.texture_height);
 
 // Function to mirror coordinates for boundary handling
 ivec2 MirrorCoords(ivec2 coords, ivec2 texture_size, vec2 uv_coords)
@@ -57,7 +57,7 @@ vec4 GetMaskedVector(vec4 input_texture, int count)
     );
 }
 
-void VerticalPass(ivec2 coords, ivec2 scaled_coords, ivec2 divergence_size, vec2 uv_coords)
+void VerticalPass(ivec2 coords, ivec2 texture_size, vec2 uv_coords)
 {
     vec2 direction = vec2(0.0, 1.0);
     float step_size = (kernel_size - 1) * 0.5;
@@ -67,9 +67,8 @@ void VerticalPass(ivec2 coords, ivec2 scaled_coords, ivec2 divergence_size, vec2
     for (int i = 0; i < kernel_size; i++)
     {
         vec2 offset = direction * (float(i) - step_size);
-
-        ivec2 neighbor_coords = scaled_coords + ivec2(offset);
-        neighbor_coords = MirrorCoords(neighbor_coords, divergence_size, uv_coords);
+        ivec2 neighbor_coords = coords + ivec2(offset);
+        neighbor_coords = MirrorCoords(neighbor_coords, texture_size, uv_coords);
         float value = imageLoad(divergence_texture, neighbor_coords).r;
 
         weighted_average_14 += value * GetMaskedVector(
@@ -90,7 +89,7 @@ void VerticalPass(ivec2 coords, ivec2 scaled_coords, ivec2 divergence_size, vec2
     imageStore(temp_texture1, coords, weighted_average_58);
 }
 
-void HorizontalPass(ivec2 coords, ivec2 pressure_size, vec2 uv_coords)
+void HorizontalPass(ivec2 coords, ivec2 texture_size, vec2 uv_coords)
 {
     vec2 direction = vec2(1.0, 0.0);
     float step_size = (kernel_size - 1) * 0.5;
@@ -100,7 +99,7 @@ void HorizontalPass(ivec2 coords, ivec2 pressure_size, vec2 uv_coords)
     {
         vec2 offset = direction * (float(i) - step_size);
         ivec2 neighbor_coords = coords + ivec2(offset);
-        neighbor_coords = MirrorCoords(neighbor_coords, pressure_size, uv_coords);
+        neighbor_coords = MirrorCoords(neighbor_coords, texture_size, uv_coords);
         
         vec4 intermediate_values_14 = imageLoad(temp_texture, neighbor_coords);
         
@@ -133,17 +132,12 @@ void main()
 
     vec2 pixel_size = vec2(1.0) / vec2(push_constants.texture_width, push_constants.texture_height);
     vec2 uv_coords = (vec2(pixel_coords) + 0.5) * pixel_size;
+    ivec2 texture_size = ivec2(push_constants.texture_width, push_constants.texture_height);
 
-    ivec2 divergence_size = ivec2(push_constants.divergence_width, push_constants.divergence_height);
-    ivec2 pressure_size = ivec2(push_constants.texture_width, push_constants.texture_height);
-
-    ivec2 scaled_coords = pixel_coords * divergence_size / pressure_size;
-    scaled_coords = clamp(scaled_coords, ivec2(0), divergence_size - ivec2(1));
-
-    VerticalPass(pixel_coords, scaled_coords, divergence_size, uv_coords);
+    VerticalPass(pixel_coords, texture_size, uv_coords);
 
     memoryBarrier();
     barrier();
 
-    HorizontalPass(pixel_coords, pressure_size, uv_coords);
+    HorizontalPass(pixel_coords, texture_size, uv_coords);
 }

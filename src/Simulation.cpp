@@ -42,6 +42,8 @@ void Simulation::AddShaderMappings()
 
         {"PressureRelaxation.comp", "../shaders/PressureRelaxation.comp"},
 
+        {"PressureResidualCalculation.comp", "../shaders/PressureResidualCalculation.comp"},
+
         {"PressureRestriction.comp", "../shaders/PressureRestriction.comp"},
 
         {"PressureProlongation.comp", "../shaders/PressureProlongation.comp"},
@@ -80,6 +82,11 @@ void Simulation::CreateMultigridTextures(uint32_t max_levels)
                 "pressure_multigrid_B" + suffix,
                 {texture_size, VK_FORMAT_R16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                  VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR});
+
+            resource_manager.CreateTexture(
+                "residual" + suffix,
+                {texture_size, VK_FORMAT_R16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                 VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST});
         }
 
         resource_manager.CreateTexture(
@@ -182,12 +189,13 @@ void Simulation::CreateComputePasses()
     divergence_calculation_pass_ = DivergenceCalculationPass::Make(app_, descriptor_pool_);
 
     jacobi_pressure_projection_pass_ = JacobiPressurePass::Make(app_, descriptor_pool_);
+    jacobi_pressure_projection_pass_->SetIterations(pressure_jacobi_iterations_);
 
     poisson_pressure_projection_pass_ = PoissonPressurePass::Make(app_, descriptor_pool_);
 
-    v_cycle_pressure_projection_pass_ = VCyclePressurePass::Make(app_, descriptor_pool_);
-    v_cycle_pressure_projection_pass_->SetMaxLevels(multigrid_levels_);
+    v_cycle_pressure_projection_pass_ = VCyclePressurePass::Make(app_, descriptor_pool_, multigrid_levels_);
     v_cycle_pressure_projection_pass_->SetRelaxationIterations(relaxation_iterations_);
+    v_cycle_pressure_projection_pass_->SetVCycleIterations(vcycle_iterations_);
 
     velocity_update_pass_ = VelocityUpdatePass::Make(app_, descriptor_pool_);
 
@@ -230,6 +238,7 @@ void Simulation::OnUpdate(VkCommandBuffer cmd_buffer, const FrameTimeInfo &frame
 
     if (pressure_projection_method_ == PressureProjectionMethod::Jacobi)
     {
+        jacobi_pressure_projection_pass_->SetIterations(pressure_jacobi_iterations_);
         jacobi_pressure_projection_pass_->Execute(cmd_buffer, simulation_constants);
     }
     else if (pressure_projection_method_ == PressureProjectionMethod::Poisson_Filter)

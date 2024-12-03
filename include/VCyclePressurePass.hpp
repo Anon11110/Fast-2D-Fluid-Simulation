@@ -41,6 +41,10 @@ class VCyclePressurePass : public ComputePass
     {
         relaxation_iterations_ = iterations;
     }
+    void SetVCycleIterations(uint32_t iterations)
+    {
+        vcycle_iterations_ = iterations;
+    }
 
     static s_ptr Make(lava::engine &app, lava::descriptor::pool::s_ptr pool, uint32_t max_levels = 5)
     {
@@ -52,6 +56,7 @@ class VCyclePressurePass : public ComputePass
                             lava::descriptor::s_ptr descriptor_set_layout,
                             lava::pipeline_layout::s_ptr &existing_pipeline_layout, size_t push_constant_size = 0);
     void CreateRelaxationPipeline();
+    void CreateResidualPipeline();
     void CreateRestrictionPipeline();
     void CreateProlongationPipeline();
     void CreatePoissonRelaxationPipeline();
@@ -59,6 +64,7 @@ class VCyclePressurePass : public ComputePass
     void PerformRelaxation(VkCommandBuffer cmd_buffer, const SimulationConstants &constants, uint32_t level);
     void PerformPoissonFilterRelaxation(VkCommandBuffer cmd_buffer, const SimulationConstants &constants,
                                         uint32_t level);
+    void CalculateResidual(VkCommandBuffer cmd_buffer, const MultigridConstants &constants, uint32_t level);
     void PerformRestriction(VkCommandBuffer cmd_buffer, const MultigridConstants &constants, uint32_t level);
     void PerformProlongation(VkCommandBuffer cmd_buffer, const MultigridConstants &constants, uint32_t level);
 
@@ -77,6 +83,12 @@ class VCyclePressurePass : public ComputePass
     lava::pipeline_layout::s_ptr poisson_relaxation_pipeline_layout_;
     lava::compute_pipeline::s_ptr poisson_relaxation_pipeline_;
 
+    // Residual calculation resources
+    lava::descriptor::s_ptr residual_descriptor_set_layout_;
+    std::vector<VkDescriptorSet> residual_descriptor_sets_;
+    lava::pipeline_layout::s_ptr residual_pipeline_layout_;
+    lava::compute_pipeline::s_ptr residual_pipeline_;
+
     // Restriction resources
     lava::descriptor::s_ptr restriction_descriptor_set_layout_;
     std::vector<VkDescriptorSet> restriction_descriptor_sets_;
@@ -93,12 +105,13 @@ class VCyclePressurePass : public ComputePass
     std::vector<lava::texture::s_ptr> pressure_multigrid_texture_B_;
     std::vector<lava::texture::s_ptr> multigrid_temp_textures_;
     std::vector<lava::texture::s_ptr> multigrid_temp_textures1_;
-    lava::texture::s_ptr divergence_field_;
+    std::vector<lava::texture::s_ptr> divergence_fields_;
     lava::texture::s_ptr obstacle_mask_;
 
     VCycleRelaxationType relaxation_type_ = VCycleRelaxationType::Standard;
     uint32_t max_levels_ = 5;
-    uint32_t relaxation_iterations_ = 4;
+    uint32_t relaxation_iterations_ = 2;
+    uint32_t vcycle_iterations_ = 3;
 };
 
 } // namespace FluidSimulation

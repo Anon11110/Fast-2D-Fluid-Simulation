@@ -24,14 +24,30 @@ void main()
     ivec2 fine_coords = coarse_coords * 2;
 
     float center = imageLoad(fine_grid_texture, fine_coords).r;
+    
+    // Edge points (weight: 2)
+    float top = (fine_coords.y + 1 < push_constants.fine_height) ? 
+                imageLoad(fine_grid_texture, fine_coords + ivec2(0, 1)).r : center;
+    float bottom = (fine_coords.y > 0) ? 
+                   imageLoad(fine_grid_texture, fine_coords + ivec2(0, -1)).r : center;
+    float left = (fine_coords.x > 0) ? 
+                 imageLoad(fine_grid_texture, fine_coords + ivec2(-1, 0)).r : center;
     float right = (fine_coords.x + 1 < push_constants.fine_width) ? 
-        imageLoad(fine_grid_texture, fine_coords + ivec2(1, 0)).r : center;
-    float up = (fine_coords.y + 1 < push_constants.fine_height) ? 
-        imageLoad(fine_grid_texture, fine_coords + ivec2(0, 1)).r : center;
+                  imageLoad(fine_grid_texture, fine_coords + ivec2(1, 0)).r : center;
+    
+    // Corner points (weight: 1)
+    float topRight = (fine_coords.x + 1 < push_constants.fine_width && fine_coords.y + 1 < push_constants.fine_height) ? 
+                     imageLoad(fine_grid_texture, fine_coords + ivec2(1, 1)).r : center;
+    float topLeft = (fine_coords.x > 0 && fine_coords.y + 1 < push_constants.fine_height) ? 
+                    imageLoad(fine_grid_texture, fine_coords + ivec2(-1, 1)).r : center;
+    float bottomRight = (fine_coords.x + 1 < push_constants.fine_width && fine_coords.y > 0) ? 
+                        imageLoad(fine_grid_texture, fine_coords + ivec2(1, -1)).r : center;
+    float bottomLeft = (fine_coords.x > 0 && fine_coords.y > 0) ? 
+                       imageLoad(fine_grid_texture, fine_coords + ivec2(-1, -1)).r : center;
 
-    float residual_value = center - 0.25 * (right + up + 
-        imageLoad(fine_grid_texture, fine_coords + ivec2(-1, 0)).r + 
-        imageLoad(fine_grid_texture, fine_coords + ivec2(0, -1)).r);
-
-    imageStore(coarse_grid_texture, coarse_coords, vec4(residual_value, 0.0, 0.0, 1.0));
+    float restricted_value = (4.0 * center + 
+                            2.0 * (left + right + top + bottom) + 
+                            topLeft + topRight + bottomLeft + bottomRight) / 16.0;
+    
+    imageStore(coarse_grid_texture, coarse_coords, vec4(restricted_value, 0.0, 0.0, 1.0));
 }

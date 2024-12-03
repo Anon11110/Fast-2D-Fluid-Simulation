@@ -81,8 +81,8 @@ class Simulation
     lava::descriptor::pool::s_ptr descriptor_pool_;
 
     bool reset_flag_ = true;
-    bool calculate_residual_error_ = true;
-    bool upload_obstacle_mask_ = true;
+    bool calculate_residual_error_ = false;
+    bool upload_obstacle_mask_ = false;
 
     const uint32_t PRESSURE_CONVERGENCE_CHECK_FRAME = 1000;
     uint32_t frame_count_ = 0;
@@ -92,7 +92,8 @@ class Simulation
 
     uint32_t pressure_jacobi_iterations_ = 32;
     uint32_t multigrid_levels_ = 5;
-    uint32_t relaxation_iterations_ = 4;
+    uint32_t relaxation_iterations_ = 2;
+    uint32_t vcycle_iterations_ = 3;
 
     ObstacleFillingPass::s_ptr obstacle_filling_pass_;
     VelocityAdvectionPass::s_ptr velocity_advect_pass_;

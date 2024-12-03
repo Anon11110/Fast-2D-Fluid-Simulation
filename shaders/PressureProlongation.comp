@@ -3,7 +3,7 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(set = 0, binding = 0, r16f) uniform readonly image2D coarse_grid_texture;
-layout(set = 0, binding = 1, r16f) uniform writeonly image2D fine_grid_texture;
+layout(set = 0, binding = 1, r16f) uniform image2D fine_grid_texture;
 
 layout(push_constant) uniform MultigridPushConstants
 {
@@ -22,31 +22,29 @@ void main()
     }
 
     ivec2 coarse_coords = fine_coords / 2;
-    if (coarse_coords.x >= push_constants.coarse_width || coarse_coords.y >= push_constants.coarse_height)
-    {
-        return;
-    }
-
-    float base_value = imageLoad(coarse_grid_texture, coarse_coords).r;
     ivec2 offset = fine_coords % 2;
 
-    float interpolated_value = base_value;
-    if (offset.x == 1 && coarse_coords.x + 1 < push_constants.coarse_width)
-    {
-        float neighbor_x = imageLoad(coarse_grid_texture, coarse_coords + ivec2(1, 0)).r;
-        interpolated_value += 0.5 * (neighbor_x - base_value);
-    }
-    if (offset.y == 1 && coarse_coords.y + 1 < push_constants.coarse_height)
-    {
-        float neighbor_y = imageLoad(coarse_grid_texture, coarse_coords + ivec2(0, 1)).r;
-        interpolated_value += 0.5 * (neighbor_y - base_value);
-    }
-    if (offset.x == 1 && offset.y == 1 &&
-        coarse_coords.x + 1 < push_constants.coarse_width && coarse_coords.y + 1 < push_constants.coarse_height)
-    {
-        float neighbor_xy = imageLoad(coarse_grid_texture, coarse_coords + ivec2(1, 1)).r;
-        interpolated_value += 0.25 * (neighbor_xy - base_value);
-    }
+    float c00 = imageLoad(coarse_grid_texture, coarse_coords).r;
+    float c10 = (coarse_coords.x + 1 < push_constants.coarse_width) ? 
+                imageLoad(coarse_grid_texture, coarse_coords + ivec2(1, 0)).r : c00;
+    float c01 = (coarse_coords.y + 1 < push_constants.coarse_height) ? 
+                imageLoad(coarse_grid_texture, coarse_coords + ivec2(0, 1)).r : c00;
+    float c11 = (coarse_coords.x + 1 < push_constants.coarse_width && 
+                 coarse_coords.y + 1 < push_constants.coarse_height) ? 
+                imageLoad(coarse_grid_texture, coarse_coords + ivec2(1, 1)).r : c00;
 
-    imageStore(fine_grid_texture, fine_coords, vec4(interpolated_value, 0.0, 0.0, 1.0));
+    float wx = float(offset.x) * 0.5;
+    float wy = float(offset.y) * 0.5;
+
+    float interpolated_correction = 
+        mix(
+            mix(c00, c10, wx),
+            mix(c01, c11, wx),
+            wy
+        );
+
+    float fine_value = imageLoad(fine_grid_texture, fine_coords).r;
+    fine_value += interpolated_correction;
+    
+    imageStore(fine_grid_texture, fine_coords, vec4(fine_value, 0.0, 0.0, 1.0));
 }

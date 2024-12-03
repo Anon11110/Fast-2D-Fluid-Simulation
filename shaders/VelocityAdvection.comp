@@ -121,7 +121,7 @@ void main()
         // Apply inflow condition
         if (traced_uv.x <= 0.01 && traced_uv.y > 0.45 && traced_uv.y < 0.55)
         {
-            current_velocity += vec2(15.0, 0.0) * push_constants.delta_time;
+            current_velocity += vec2(10.0, 0.0) * push_constants.delta_time;
         }
     }
 

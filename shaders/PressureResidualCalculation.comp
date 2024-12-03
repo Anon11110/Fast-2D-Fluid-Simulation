@@ -1,0 +1,45 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, r16f) uniform image2D divergence_texture;
+layout(set = 0, binding = 1, r16f) uniform image2D pressure_texture;
+layout(set = 0, binding = 2, r16f) uniform writeonly image2D residual_texture;
+
+layout(push_constant) uniform MultigridPushConstants
+{
+    int fine_width;
+    int fine_height;
+    int coarse_width;
+    int coarse_height;
+} push_constants;
+
+void main()
+{
+    ivec2 coarse_coords = ivec2(gl_GlobalInvocationID.xy);
+    if (coarse_coords.x >= push_constants.coarse_width || coarse_coords.y >= push_constants.coarse_height) {
+        return;
+    }
+
+    ivec2 fine_coords = 2 * coarse_coords;
+    
+    float grid_spacing = max(1.0 / push_constants.fine_width, 1.0 / push_constants.fine_height);
+    float spacing_squared = grid_spacing * grid_spacing;
+    
+    float p_center = imageLoad(pressure_texture, fine_coords).r;
+    
+    float p_left = (fine_coords.x > 0) ? 
+        imageLoad(pressure_texture, fine_coords + ivec2(-1, 0)).r : p_center;
+    float p_right = (fine_coords.x < push_constants.fine_width - 1) ? 
+        imageLoad(pressure_texture, fine_coords + ivec2(1, 0)).r : p_center;
+    float p_up = (fine_coords.y < push_constants.fine_height - 1) ? 
+        imageLoad(pressure_texture, fine_coords + ivec2(0, 1)).r : p_center;
+    float p_down = (fine_coords.y > 0) ? 
+        imageLoad(pressure_texture, fine_coords + ivec2(0, -1)).r : p_center;
+    
+    float laplacian_p = (p_left + p_right + p_up + p_down - 4.0 * p_center) / spacing_squared;
+    float divergence = imageLoad(divergence_texture, fine_coords).r;
+    float residual = divergence - laplacian_p;
+    
+    imageStore(residual_texture, coarse_coords, vec4(residual, 0.0, 0.0, 1.0));
+}

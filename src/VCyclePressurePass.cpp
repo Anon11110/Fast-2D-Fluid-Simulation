@@ -8,7 +8,13 @@ VCyclePressurePass::VCyclePressurePass(lava::engine &app, lava::descriptor::pool
 {
     auto &resource_manager = ResourceManager::GetInstance();
 
-    divergence_field_ = resource_manager.GetTexture("divergence_field");
+    divergence_fields_.resize(max_levels_);
+    divergence_fields_[0] = resource_manager.GetTexture("divergence_field");
+    for (uint32_t level = 1; level < max_levels_; level++)
+    {
+        divergence_fields_[level] = resource_manager.GetTexture("residual_L" + std::to_string(level));
+    }
+
     obstacle_mask_ = resource_manager.GetTexture("obstacle_mask");
 
     pressure_multigrid_texture_A_.resize(max_levels_);
@@ -63,6 +69,19 @@ VCyclePressurePass::~VCyclePressurePass()
     if (poisson_relaxation_pipeline_)
     {
         poisson_relaxation_pipeline_->destroy();
+    }
+
+    if (residual_descriptor_set_layout_)
+    {
+        residual_descriptor_set_layout_->destroy();
+    }
+    if (residual_pipeline_layout_)
+    {
+        residual_pipeline_layout_->destroy();
+    }
+    if (residual_pipeline_)
+    {
+        residual_pipeline_->destroy();
     }
 
     if (restriction_descriptor_set_layout_)
@@ -130,6 +149,21 @@ void VCyclePressurePass::CreateDescriptorSets()
         throw std::runtime_error("Failed to create poisson relaxation descriptor set layout");
     }
 
+    // Residual calculation descriptor sets
+    residual_descriptor_set_layout_ = lava::descriptor::make();
+    residual_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                 VK_SHADER_STAGE_COMPUTE_BIT); // Divergence texture
+    residual_descriptor_set_layout_->add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                 VK_SHADER_STAGE_COMPUTE_BIT); // Pressure texture
+    residual_descriptor_set_layout_->add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                 VK_SHADER_STAGE_COMPUTE_BIT); // Residual texture
+
+    if (!residual_descriptor_set_layout_->create(app_.device))
+    {
+        lava::logger()->error("Failed to create residual descriptor set layout");
+        throw std::runtime_error("Failed to create residual descriptor set layout");
+    }
+
     // Restriction descriptor sets
     restriction_descriptor_set_layout_ = lava::descriptor::make();
     restriction_descriptor_set_layout_->add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -160,6 +194,7 @@ void VCyclePressurePass::CreateDescriptorSets()
     relaxation_descriptor_sets_A_.resize(max_levels_);
     relaxation_descriptor_sets_B_.resize(max_levels_);
     poisson_relaxation_descriptor_sets_.resize(max_levels_);
+    residual_descriptor_sets_.resize(max_levels_);
     restriction_descriptor_sets_.resize(max_levels_ - 1);
     prolongation_descriptor_sets_.resize(max_levels_ - 1);
 
@@ -169,6 +204,7 @@ void VCyclePressurePass::CreateDescriptorSets()
         relaxation_descriptor_sets_B_[level] = relaxation_descriptor_set_layout_->allocate(descriptor_pool_->get());
         poisson_relaxation_descriptor_sets_[level] =
             poisson_relaxation_descriptor_set_layout_->allocate(descriptor_pool_->get());
+        residual_descriptor_sets_[level] = residual_descriptor_set_layout_->allocate(descriptor_pool_->get());
 
         if (level < max_levels_ - 1)
         {
@@ -186,7 +222,7 @@ void VCyclePressurePass::UpdateDescriptorSets()
         // Update relaxation descriptor sets
         {
             VkDescriptorImageInfo divergence_info{.sampler = VK_NULL_HANDLE,
-                                                  .imageView = divergence_field_->get_image()->get_view(),
+                                                  .imageView = divergence_fields_[level]->get_image()->get_view(),
                                                   .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
             VkDescriptorImageInfo pressure_A_info{.sampler = VK_NULL_HANDLE,
@@ -219,7 +255,7 @@ void VCyclePressurePass::UpdateDescriptorSets()
         // Update Poisson relaxation descriptor sets
         {
             VkDescriptorImageInfo divergence_info{.sampler = VK_NULL_HANDLE,
-                                                  .imageView = divergence_field_->get_image()->get_view(),
+                                                  .imageView = divergence_fields_[level]->get_image()->get_view(),
                                                   .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
             VkDescriptorImageInfo pressure_info{.sampler = VK_NULL_HANDLE,
@@ -253,17 +289,41 @@ void VCyclePressurePass::UpdateDescriptorSets()
         // Update restriction and prolongation descriptor sets for non-final levels
         if (level < max_levels_ - 1)
         {
-            // Restriction
-            VkDescriptorImageInfo fine_grid_info = {.sampler = VK_NULL_HANDLE,
+            // Residual calculation
+            {
+                VkDescriptorImageInfo divergence_info{.sampler = VK_NULL_HANDLE,
+                                                      .imageView = divergence_fields_[level]->get_image()->get_view(),
+                                                      .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+                VkDescriptorImageInfo pressure_info{.sampler = VK_NULL_HANDLE,
                                                     .imageView =
                                                         pressure_multigrid_texture_A_[level]->get_image()->get_view(),
                                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
-            VkDescriptorImageInfo coarse_grid_info = {
+                VkDescriptorImageInfo residual_info{
+                    .sampler = VK_NULL_HANDLE,
+                    .imageView = divergence_fields_[level + 1]->get_image()->get_view(), // Residual at next level
+                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+
+                std::vector<VkDescriptorImageInfo> image_infos = {divergence_info, pressure_info, residual_info};
+                std::vector<VkDescriptorType> descriptor_types = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                                  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                                  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
+
+                ComputePass::UpdateDescriptorSets(residual_descriptor_sets_[level], image_infos, descriptor_types);
+            }
+
+            // Restriction
+            VkDescriptorImageInfo fine_grid_divergence_info = {.sampler = VK_NULL_HANDLE,
+                                                    .imageView =
+                                                        divergence_fields_[level]->get_image()->get_view(),
+                                                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+            VkDescriptorImageInfo coarse_grid_divergence_info = {
                 .sampler = VK_NULL_HANDLE,
-                .imageView = pressure_multigrid_texture_A_[level + 1]->get_image()->get_view(),
+                .imageView = divergence_fields_[level + 1]->get_image()->get_view(),
                 .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
-            std::vector<VkDescriptorImageInfo> restriction_infos = {fine_grid_info, coarse_grid_info};
+            std::vector<VkDescriptorImageInfo> restriction_infos = {fine_grid_divergence_info,
+                                                                    coarse_grid_divergence_info};
             std::vector<VkDescriptorType> restriction_types = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
 
@@ -271,7 +331,16 @@ void VCyclePressurePass::UpdateDescriptorSets()
                                               restriction_types);
 
             // Prolongation
-            std::vector<VkDescriptorImageInfo> prolongation_infos = {coarse_grid_info, fine_grid_info};
+            VkDescriptorImageInfo coarse_grid_pressure_info = {
+                .sampler = VK_NULL_HANDLE,
+                .imageView = pressure_multigrid_texture_A_[level + 1]->get_image()->get_view(),
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+            VkDescriptorImageInfo fine_grid_pressure_info = {.sampler = VK_NULL_HANDLE,
+                                                               .imageView = pressure_multigrid_texture_A_[level]->get_image()->get_view(),
+                                                               .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+            
+            std::vector<VkDescriptorImageInfo> prolongation_infos = {coarse_grid_pressure_info,
+                                                                     fine_grid_pressure_info};
 
             std::vector<VkDescriptorType> prolongation_types = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
@@ -284,6 +353,7 @@ void VCyclePressurePass::UpdateDescriptorSets()
 void VCyclePressurePass::CreatePipeline()
 {
     CreateRelaxationPipeline();
+    CreateResidualPipeline();
     CreateRestrictionPipeline();
     CreateProlongationPipeline();
     CreatePoissonRelaxationPipeline();
@@ -331,6 +401,13 @@ void VCyclePressurePass::CreateRelaxationPipeline()
                        relaxation_pipeline_layout_, sizeof(SimulationConstants));
 }
 
+void VCyclePressurePass::CreateResidualPipeline()
+{
+    residual_pipeline_ = lava::compute_pipeline::make(app_.device);
+    CreateBasePipeline(residual_pipeline_, "PressureResidualCalculation.comp", residual_descriptor_set_layout_,
+                       residual_pipeline_layout_, sizeof(MultigridConstants));
+}
+
 void VCyclePressurePass::CreateRestrictionPipeline()
 {
     restriction_pipeline_ = lava::compute_pipeline::make(app_.device);
@@ -360,6 +437,9 @@ void VCyclePressurePass::PerformRelaxation(VkCommandBuffer cmd_buffer, const Sim
     lava::texture::s_ptr active_read_texture = pressure_multigrid_texture_A_[level];
     lava::texture::s_ptr active_write_texture = pressure_multigrid_texture_B_[level];
 
+    divergence_fields_[level]->get_image()->transition_layout(
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
     for (uint32_t i = 0; i < relaxation_iterations_; i++)
     {
         active_read_texture->get_image()->transition_layout(
@@ -376,7 +456,7 @@ void VCyclePressurePass::PerformRelaxation(VkCommandBuffer cmd_buffer, const Sim
         vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, relaxation_pipeline_->get_layout()->get(),
                                 0, 1, &pressure_descriptor_set, 0, nullptr);
 
-        vkCmdDispatch(cmd_buffer, constants.texture_width / 16 + 1, constants.texture_height / 16 + 1, 1);
+        vkCmdDispatch(cmd_buffer, (constants.texture_width + 15) / 16, (constants.texture_height + 15) / 16, 1);
 
         // Swap read/write textures for next iteration
         std::swap(active_read_texture, active_write_texture);
@@ -390,7 +470,7 @@ void VCyclePressurePass::PerformRelaxation(VkCommandBuffer cmd_buffer, const Sim
 void VCyclePressurePass::PerformPoissonFilterRelaxation(VkCommandBuffer cmd_buffer,
                                                         const SimulationConstants &constants, uint32_t level)
 {
-    divergence_field_->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT,
+    divergence_fields_[level]->get_image()->transition_layout(cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT,
                                                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     pressure_multigrid_texture_A_[level]->get_image()->transition_layout(
@@ -413,16 +493,40 @@ void VCyclePressurePass::PerformPoissonFilterRelaxation(VkCommandBuffer cmd_buff
                             poisson_relaxation_pipeline_->get_layout()->get(), 0, 1,
                             &poisson_relaxation_descriptor_sets_[level], 0, nullptr);
 
-    vkCmdDispatch(cmd_buffer, constants.texture_width / 16 + 1, constants.texture_height / 16 + 1, 1);
+    vkCmdDispatch(cmd_buffer, (constants.texture_width + 15) / 16, (constants.texture_height + 15) / 16, 1);
 }
+
+void VCyclePressurePass::CalculateResidual(VkCommandBuffer cmd_buffer, const MultigridConstants &constants,
+                                           uint32_t level)
+{
+    divergence_fields_[level]->get_image()->transition_layout(
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    pressure_multigrid_texture_A_[level]->get_image()->transition_layout(
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    divergence_fields_[level + 1]->get_image()->transition_layout(
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    residual_pipeline_->bind(cmd_buffer);
+
+    vkCmdPushConstants(cmd_buffer, residual_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       sizeof(MultigridConstants), &constants);
+
+    vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, residual_pipeline_->get_layout()->get(), 0, 1,
+                            &residual_descriptor_sets_[level], 0, nullptr);
+
+    vkCmdDispatch(cmd_buffer, (constants.coarse_width + 15) / 16, (constants.coarse_height + 15) / 16, 1);
+}
+
 
 void VCyclePressurePass::PerformRestriction(VkCommandBuffer cmd_buffer, const MultigridConstants &constants,
                                             uint32_t level)
 {
-    pressure_multigrid_texture_A_[level]->get_image()->transition_layout(
+    divergence_fields_[level]->get_image()->transition_layout(
         cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
-    pressure_multigrid_texture_A_[level + 1]->get_image()->transition_layout(
+    divergence_fields_[level + 1]->get_image()->transition_layout(
         cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     restriction_pipeline_->bind(cmd_buffer);
@@ -430,78 +534,81 @@ void VCyclePressurePass::PerformRestriction(VkCommandBuffer cmd_buffer, const Mu
                        sizeof(MultigridConstants), &constants);
     vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, restriction_pipeline_->get_layout()->get(), 0,
                             1, &restriction_descriptor_sets_[level], 0, nullptr);
-    vkCmdDispatch(cmd_buffer, constants.coarse_width / 16 + 1, constants.coarse_height / 16 + 1, 1);
+
+    vkCmdDispatch(cmd_buffer, (constants.coarse_width + 15) / 16, (constants.coarse_height + 15) / 16, 1);
 }
 
 void VCyclePressurePass::PerformProlongation(VkCommandBuffer cmd_buffer, const MultigridConstants &constants,
                                              uint32_t level)
 {
-    uint32_t prol_group_count_x_ = (constants.coarse_width + 15) / 16;
-    uint32_t prol_group_count_y_ = (constants.coarse_height + 15) / 16;
-
     pressure_multigrid_texture_A_[level + 1]->get_image()->transition_layout(
         cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     pressure_multigrid_texture_A_[level]->get_image()->transition_layout(
-        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        cmd_buffer, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     prolongation_pipeline_->bind(cmd_buffer);
     vkCmdPushConstants(cmd_buffer, prolongation_pipeline_->get_layout()->get(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
                        sizeof(MultigridConstants), &constants);
     vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, prolongation_pipeline_->get_layout()->get(), 0,
                             1, &prolongation_descriptor_sets_[level], 0, nullptr);
-    vkCmdDispatch(cmd_buffer, constants.fine_width / 16 + 1, constants.fine_height / 16 + 1, 1);
+    vkCmdDispatch(cmd_buffer, (constants.coarse_width + 15) / 16, (constants.coarse_height + 15) / 16, 1);
 }
 
 void VCyclePressurePass::Execute(VkCommandBuffer cmd_buffer, const SimulationConstants &constants)
 {
-    // Initial relaxation for the finest grid
-    if (relaxation_type_ == VCycleRelaxationType::Poisson_Filter)
+    for (int i = 0; i < vcycle_iterations_; i++)
     {
-        PerformPoissonFilterRelaxation(cmd_buffer, constants, 0);
-    }
-    else
-    {
-        PerformRelaxation(cmd_buffer, constants, 0);
-    }
-
-    SimulationConstants level_constants = constants;
-
-    // Restrict residual to coarser grids
-    for (uint32_t level = 0; level < max_levels_ - 1; level++)
-    {
-        MultigridConstants multigrid_constants = CalculateMultigridConstants(level);
-        PerformRestriction(cmd_buffer, multigrid_constants, level);
-
-        level_constants.texture_width = pressure_multigrid_texture_A_[level + 1]->get_image()->get_size().x;
-        level_constants.texture_height = pressure_multigrid_texture_A_[level + 1]->get_image()->get_size().y;
-
+        // Initial relaxation for the finest grid
         if (relaxation_type_ == VCycleRelaxationType::Poisson_Filter)
         {
-            PerformPoissonFilterRelaxation(cmd_buffer, level_constants, level + 1);
+            PerformPoissonFilterRelaxation(cmd_buffer, constants, 0);
         }
         else
         {
-            PerformRelaxation(cmd_buffer, level_constants, level + 1);
+            PerformRelaxation(cmd_buffer, constants, 0);
         }
-    }
 
-    // Prolong correction back to finer grids
-    for (int32_t level = max_levels_ - 2; level >= 0; level--)
-    {
-        MultigridConstants multigrid_constants = CalculateMultigridConstants(level);
-        PerformProlongation(cmd_buffer, multigrid_constants, level);
+        SimulationConstants level_constants = constants;
 
-        level_constants.texture_width = pressure_multigrid_texture_A_[level]->get_image()->get_size().x;
-        level_constants.texture_height = pressure_multigrid_texture_A_[level]->get_image()->get_size().y;
-
-        if (relaxation_type_ == VCycleRelaxationType::Poisson_Filter)
+        // Restrict residual to coarser grids
+        for (uint32_t level = 0; level < max_levels_ - 1; level++)
         {
-            PerformPoissonFilterRelaxation(cmd_buffer, level_constants, level);
+            MultigridConstants multigrid_constants = CalculateMultigridConstants(level);
+            CalculateResidual(cmd_buffer, multigrid_constants, level);
+            PerformRestriction(cmd_buffer, multigrid_constants, level);
+
+            level_constants.texture_width = pressure_multigrid_texture_A_[level + 1]->get_image()->get_size().x;
+            level_constants.texture_height = pressure_multigrid_texture_A_[level + 1]->get_image()->get_size().y;
+
+            if (relaxation_type_ == VCycleRelaxationType::Poisson_Filter)
+            {
+                PerformPoissonFilterRelaxation(cmd_buffer, level_constants, level + 1);
+            }
+            else
+            {
+                PerformRelaxation(cmd_buffer, level_constants, level + 1);
+            }
         }
-        else
+
+        // Prolong correction back to finer grids
+        for (int32_t level = max_levels_ - 2; level >= 0; level--)
         {
-            PerformRelaxation(cmd_buffer, level_constants, level);
+            MultigridConstants multigrid_constants = CalculateMultigridConstants(level);
+            PerformProlongation(cmd_buffer, multigrid_constants, level);
+
+            level_constants.texture_width = pressure_multigrid_texture_A_[level]->get_image()->get_size().x;
+            level_constants.texture_height = pressure_multigrid_texture_A_[level]->get_image()->get_size().y;
+
+            if (relaxation_type_ == VCycleRelaxationType::Poisson_Filter)
+            {
+                PerformPoissonFilterRelaxation(cmd_buffer, level_constants, level);
+            }
+            else
+            {
+                PerformRelaxation(cmd_buffer, level_constants, level);
+            }
         }
     }
 }

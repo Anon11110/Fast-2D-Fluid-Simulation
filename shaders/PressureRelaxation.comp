@@ -45,32 +45,23 @@ void main()
         return;
     }
 
-    vec2 pixel_size = vec2(1.0) / vec2(push_constants.texture_width, push_constants.texture_height);
-    vec2 uv_coords = (vec2(pixel_coords) + 0.5) * pixel_size;
-
-    ivec2 divergence_size = ivec2(push_constants.divergence_width, push_constants.divergence_height);
-    ivec2 pressure_size = ivec2(push_constants.texture_width, push_constants.texture_height);
-
-    ivec2 scaled_coords = pixel_coords * divergence_size / pressure_size;
-    scaled_coords = clamp(scaled_coords, ivec2(0), divergence_size - ivec2(1));
-
-    float divergence = imageLoad(divergence_texture, scaled_coords).r;
-
+    float divergence = imageLoad(divergence_texture, pixel_coords).r;
+    
     float pressure = LoadPressure(pixel_coords);
     float pressure_right = LoadPressure(pixel_coords + ivec2(1, 0));
     float pressure_left = LoadPressure(pixel_coords + ivec2(-1, 0));
     float pressure_up = LoadPressure(pixel_coords + ivec2(0, 1));
     float pressure_down = LoadPressure(pixel_coords + ivec2(0, -1));
-
+    
     float grid_spacing = max(1.0 / push_constants.texture_width, 1.0 / push_constants.texture_height);
-
-    // Jacobi iteration for pressure correction
-    pressure = 0.25 * (pressure_right + pressure_left + pressure_up + pressure_down - divergence * grid_spacing * grid_spacing);
-
+    
+    pressure = 0.25 * (pressure_right + pressure_left + pressure_up + pressure_down - 
+                      divergence * grid_spacing * grid_spacing);
+    
     if (push_constants.reset_flag)
     {
         pressure = 0.0;
     }
-
+    
     imageStore(pressure_texture, pixel_coords, vec4(pressure, 0.0, 0.0, 1.0));
 }
