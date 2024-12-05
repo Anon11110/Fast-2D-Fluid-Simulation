@@ -553,7 +553,7 @@ void VCyclePressurePass::PerformProlongation(VkCommandBuffer cmd_buffer, const M
                        sizeof(MultigridConstants), &constants);
     vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, prolongation_pipeline_->get_layout()->get(), 0,
                             1, &prolongation_descriptor_sets_[level], 0, nullptr);
-    vkCmdDispatch(cmd_buffer, (constants.coarse_width + 15) / 16, (constants.coarse_height + 15) / 16, 1);
+    vkCmdDispatch(cmd_buffer, (constants.fine_width + 15) / 16, (constants.fine_height + 15) / 16, 1);
 }
 
 void VCyclePressurePass::Execute(VkCommandBuffer cmd_buffer, const SimulationConstants &constants)

@@ -109,7 +109,7 @@ class VCyclePressurePass : public ComputePass
     lava::texture::s_ptr obstacle_mask_;
 
     VCycleRelaxationType relaxation_type_ = VCycleRelaxationType::Standard;
-    uint32_t max_levels_ = 5;
+    uint32_t max_levels_ = 8;
     uint32_t relaxation_iterations_ = 2;
     uint32_t vcycle_iterations_ = 3;
 };

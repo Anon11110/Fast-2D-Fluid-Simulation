@@ -91,7 +91,7 @@ class Simulation
     PressureProjectionMethod pressure_projection_method_ = PressureProjectionMethod::Jacobi;
 
     uint32_t pressure_jacobi_iterations_ = 32;
-    uint32_t multigrid_levels_ = 5;
+    uint32_t multigrid_levels_ = 8;
     uint32_t relaxation_iterations_ = 2;
     uint32_t vcycle_iterations_ = 3;
 

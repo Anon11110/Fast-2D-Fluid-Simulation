@@ -16,8 +16,13 @@ layout(set = 0, binding = 4) uniform sampler2D obstacle_mask_texture;
 const int num_ranks = 4;
 const int ranks_per_texture = 4;
 const bool use_second_texture = (num_ranks > ranks_per_texture);
-
 const int kernel_size = INVERSE_Itr_32_Filter_Size;
+const int TILE_SIZE_X = 16;
+const int TILE_SIZE_Y = 16;
+const int RADIUS = (kernel_size - 1) / 2;
+
+shared float shared_data[TILE_SIZE_Y + 2 * RADIUS][TILE_SIZE_X + 2 * RADIUS];
+
 float grid_spacing = max(1.0 / push_constants.texture_width, 1.0 / push_constants.texture_height);
 
 // Function to mirror coordinates for boundary handling
@@ -57,25 +62,47 @@ vec4 GetMaskedVector(vec4 input_texture, int count)
     );
 }
 
+void LoadToSharedMemory(ivec2 global_coords, ivec2 texture_size, vec2 uv_coords)
+{
+    int local_x = int(gl_LocalInvocationID.x);
+    int local_y = int(gl_LocalInvocationID.y);
+
+    ivec2 tile_start = ivec2(gl_WorkGroupID.xy * uvec2(TILE_SIZE_X, TILE_SIZE_Y)) - ivec2(RADIUS);
+    
+    for (int y = local_y; y < TILE_SIZE_Y + 2 * RADIUS; y += TILE_SIZE_Y)
+    {
+        for (int x = local_x; x < TILE_SIZE_X + 2 * RADIUS; x += TILE_SIZE_X)
+        {
+            ivec2 load_coords = tile_start + ivec2(x, y);
+            load_coords = MirrorCoords(load_coords, texture_size, uv_coords);
+            float value = imageLoad(divergence_texture, load_coords).r;
+            shared_data[y][x] = value;
+        }
+    }
+    
+    barrier();
+}
+
 void VerticalPass(ivec2 coords, ivec2 texture_size, vec2 uv_coords)
 {
-    vec2 direction = vec2(0.0, 1.0);
-    float step_size = (kernel_size - 1) * 0.5;
-    vec4 weighted_average_14 = vec4(0.0);  // Ranks 1-4
-    vec4 weighted_average_58 = vec4(0.0);  // Ranks 5-8
-
+    int local_x = int(gl_LocalInvocationID.x);
+    int local_y = int(gl_LocalInvocationID.y);
+    
+    vec4 weighted_average_14 = vec4(0.0);
+    vec4 weighted_average_58 = vec4(0.0);
+    
+    int center_y = local_y + RADIUS;
+    int center_x = local_x + RADIUS;
+    
     for (int i = 0; i < kernel_size; i++)
     {
-        vec2 offset = direction * (float(i) - step_size);
-        ivec2 neighbor_coords = coords + ivec2(offset);
-        neighbor_coords = MirrorCoords(neighbor_coords, texture_size, uv_coords);
-        float value = imageLoad(divergence_texture, neighbor_coords).r;
-
+        float value = shared_data[center_y + (i - RADIUS)][center_x];
+        
         weighted_average_14 += value * GetMaskedVector(
             INVERSE_Itr_32_R14_Filters[i], 
             min(num_ranks, ranks_per_texture)
         );
-
+        
         if (use_second_texture)
         {
             weighted_average_58 += value * GetMaskedVector(
@@ -84,40 +111,41 @@ void VerticalPass(ivec2 coords, ivec2 texture_size, vec2 uv_coords)
             );
         }
     }
-
+    
     imageStore(temp_texture, coords, weighted_average_14);
-    imageStore(temp_texture1, coords, weighted_average_58);
+    if (use_second_texture)
+    {
+        imageStore(temp_texture1, coords, weighted_average_58);
+    }
 }
 
 void HorizontalPass(ivec2 coords, ivec2 texture_size, vec2 uv_coords)
 {
-    vec2 direction = vec2(1.0, 0.0);
-    float step_size = (kernel_size - 1) * 0.5;
+    vec4 intermediate_values_14 = vec4(0.0);
+    vec4 intermediate_values_58 = vec4(0.0);
     float final_pressure = 0.0;
-
+    
     for (int i = 0; i < kernel_size; i++)
     {
-        vec2 offset = direction * (float(i) - step_size);
-        ivec2 neighbor_coords = coords + ivec2(offset);
-        neighbor_coords = MirrorCoords(neighbor_coords, texture_size, uv_coords);
+        ivec2 sample_coords = coords + ivec2(i - RADIUS, 0);
+        sample_coords = MirrorCoords(sample_coords, texture_size, uv_coords);
         
-        vec4 intermediate_values_14 = imageLoad(temp_texture, neighbor_coords);
-        
+        intermediate_values_14 = imageLoad(temp_texture, sample_coords);
         final_pressure += dot(
             intermediate_values_14,
             -GetMaskedVector(INVERSE_Itr_32_R14_Filters[i], min(num_ranks, ranks_per_texture))
         );
-
+        
         if (use_second_texture)
         {
-            vec4 intermediate_values_58 = imageLoad(temp_texture1, neighbor_coords);
+            intermediate_values_58 = imageLoad(temp_texture1, sample_coords);
             final_pressure += dot(
                 intermediate_values_58,
                 -GetMaskedVector(INVERSE_Itr_32_R58_Filters[i], num_ranks - ranks_per_texture)
             );
         }
     }
-
+    
     final_pressure *= (grid_spacing * grid_spacing);
     imageStore(pressure_texture, coords, vec4(final_pressure, 0.0, 0.0, 1.0));
 }
@@ -126,12 +154,19 @@ void main()
 {
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     ivec2 texture_size = ivec2(push_constants.texture_width, push_constants.texture_height);
-
-    vec2 pixel_size = vec2(1.0) / vec2(push_constants.texture_width, push_constants.texture_height);
+    
+    if (pixel_coords.x >= texture_size.x || pixel_coords.y >= texture_size.y)
+    {
+        return;
+    }
+    
+    vec2 pixel_size = vec2(1.0) / vec2(texture_size);
     vec2 uv_coords = (vec2(pixel_coords) + 0.5) * pixel_size;
+    
+    LoadToSharedMemory(pixel_coords, texture_size, uv_coords);
 
     VerticalPass(pixel_coords, texture_size, uv_coords);
-
+    
     memoryBarrier();
     barrier();
 
